@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ═══════════════════════════════════════════
 # Remotion Video Gen Pipeline
-# Usage: ./pipeline.sh <input.mp4> <edit.json>
+# Usage: ./pipeline.sh <input.mp4> <edit.json> [options]
 # ═══════════════════════════════════════════
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -39,9 +39,19 @@ step_timer() {
   fi
 }
 
+# ── Handle --clean before arg count check ──
+for arg in "$@"; do
+  if [ "$arg" = "--clean" ]; then
+    echo "  [CLEAN] Removing .work/ and output/ directories..."
+    rm -rf "$WORK_DIR" "$OUTPUT_DIR"
+    echo "  [OK] Clean complete."
+    exit 0
+  fi
+done
+
 # Parse args
 if [ $# -lt 2 ]; then
-  echo "Usage: ./pipeline.sh <input.mp4> <edit-or-scenario.json>"
+  echo "Usage: ./pipeline.sh <input.mp4> <edit-or-scenario.json> [options]"
   echo ""
   echo "Args:"
   echo "  input.mp4          Source video file"
@@ -52,6 +62,8 @@ if [ $# -lt 2 ]; then
   echo "  --skip-ai          Skip Step 3 (use existing edit.json)"
   echo "  --edit-only        Only run Step 4 (Remotion render)"
   echo "  --force            Ignore cache, re-run everything"
+  echo "  --clean            Delete .work/ and output/, then exit"
+  echo "  --from-step=N      Start from step N (1-5), skip earlier steps"
   echo "  --output PATH      Output file (default: output/final.mp4)"
   echo "  --concurrency N    Remotion parallel frames (default: 4)"
   exit 1
@@ -63,6 +75,7 @@ SKIP_ANALYSIS=false
 SKIP_AI=false
 EDIT_ONLY=false
 FORCE=false
+FROM_STEP=1
 OUTPUT_FILE="$OUTPUT_DIR/final.mp4"
 CONCURRENCY=4
 
@@ -74,6 +87,7 @@ while [ $# -gt 0 ]; do
     --skip-ai) SKIP_AI=true ;;
     --edit-only) EDIT_ONLY=true ;;
     --force) FORCE=true ;;
+    --from-step=*) FROM_STEP="${1#--from-step=}" ;;
     --output) OUTPUT_FILE="$2"; shift ;;
     --concurrency) CONCURRENCY="$2"; shift ;;
     *) echo "Unknown option: $1"; exit 1 ;;
@@ -82,6 +96,73 @@ while [ $# -gt 0 ]; do
 done
 
 mkdir -p "$WORK_DIR" "$OUTPUT_DIR"
+
+# ── Step tracking for summary ──
+declare -a STEP_NAMES=("Preprocess" "Analysis" "AI Edit" "Render" "Loudnorm")
+declare -a STEP_STATUS=("SKIP" "SKIP" "SKIP" "SKIP" "SKIP")
+declare -a STEP_ELAPSED=(0 0 0 0 0)
+
+# ── Validate --from-step ──
+if ! [[ "$FROM_STEP" =~ ^[1-5]$ ]]; then
+  echo "Error: --from-step must be 1-5, got '$FROM_STEP'"
+  exit 1
+fi
+
+# ── Input file change detection via md5 ──
+INPUT_MD5=$(md5 -q "$INPUT" 2>/dev/null || md5sum "$INPUT" | cut -d' ' -f1)
+if [ -f "$WORK_DIR/input.md5" ]; then
+  PREV_MD5=$(cat "$WORK_DIR/input.md5")
+  if [ "$INPUT_MD5" != "$PREV_MD5" ]; then
+    echo "  [INVALIDATE] Input file changed, clearing cache"
+    rm -rf "$WORK_DIR"/*
+    mkdir -p "$WORK_DIR"
+  fi
+fi
+echo "$INPUT_MD5" > "$WORK_DIR/input.md5"
+
+# ── Scenario/edit JSON change detection ──
+SCENARIO_MD5=$(md5 -q "$EDIT_JSON" 2>/dev/null || md5sum "$EDIT_JSON" | cut -d' ' -f1)
+if [ -f "$WORK_DIR/scenario.md5" ]; then
+  PREV_SCENARIO_MD5=$(cat "$WORK_DIR/scenario.md5")
+  if [ "$SCENARIO_MD5" != "$PREV_SCENARIO_MD5" ]; then
+    echo "  [INVALIDATE] Scenario/edit JSON changed, clearing Step 3+ cache"
+    rm -f "$WORK_DIR/edit.json"
+    # Don't remove Step 1-2 outputs (normalized video, transcript, scenes, silences, captions)
+  fi
+fi
+echo "$SCENARIO_MD5" > "$WORK_DIR/scenario.md5"
+
+# ── --from-step validation: check required files ──
+if [ "$FROM_STEP" -gt 1 ]; then
+  MISSING_FILES=()
+  # Steps 1 produces normalized video + audio
+  if [ "$FROM_STEP" -gt 1 ]; then
+    BASENAME_CHECK=$(basename "$INPUT" .mp4)
+    [ ! -f "$WORK_DIR/${BASENAME_CHECK}_normalized.mp4" ] && MISSING_FILES+=("${BASENAME_CHECK}_normalized.mp4")
+  fi
+  # Step 2 produces transcript, scenes, silences
+  if [ "$FROM_STEP" -gt 2 ]; then
+    [ ! -f "$WORK_DIR/transcript.json" ] && MISSING_FILES+=("transcript.json")
+    [ ! -f "$WORK_DIR/scenes.json" ] && MISSING_FILES+=("scenes.json")
+    [ ! -f "$WORK_DIR/silences.json" ] && MISSING_FILES+=("silences.json")
+  fi
+  # Step 3 produces edit.json
+  if [ "$FROM_STEP" -gt 3 ]; then
+    [ ! -f "$WORK_DIR/edit.json" ] && [ ! -f "$EDIT_JSON" ] && MISSING_FILES+=("edit.json")
+  fi
+  # Step 4 produces output file
+  if [ "$FROM_STEP" -gt 4 ]; then
+    [ ! -f "$OUTPUT_FILE" ] && MISSING_FILES+=("$(basename "$OUTPUT_FILE")")
+  fi
+
+  if [ ${#MISSING_FILES[@]} -gt 0 ]; then
+    echo "Error: --from-step=$FROM_STEP requires cached files from earlier steps."
+    echo "  Missing: ${MISSING_FILES[*]}"
+    echo "  Run the full pipeline first, or use a lower --from-step value."
+    exit 1
+  fi
+  echo "  [FROM-STEP] Starting from step $FROM_STEP, skipping earlier steps"
+fi
 
 BASENAME=$(basename "$INPUT" .mp4)
 NORMALIZED="$WORK_DIR/${BASENAME}_normalized.mp4"
@@ -95,7 +176,7 @@ AI_EDIT="$WORK_DIR/edit.json"
 # ═══════════════════════════════════════════
 # Step 1: ffmpeg Preprocessing
 # ═══════════════════════════════════════════
-if [ "$EDIT_ONLY" = false ]; then
+if [ "$EDIT_ONLY" = false ] && [ "$FROM_STEP" -le 1 ]; then
   echo ""
   echo "==========================================="
   echo " Step 1: Preprocessing"
@@ -116,17 +197,20 @@ if [ "$EDIT_ONLY" = false ]; then
       -vn -acodec pcm_s16le -ar 16000 -ac 1 \
       "$AUDIO_WAV" 2>/dev/null
     echo "  [OK] Audio: $AUDIO_WAV"
+    STEP_STATUS[0]="RAN"
   else
     echo "  [CACHE] Normalized video exists, skipping"
+    STEP_STATUS[0]="CACHE"
   fi
 
+  STEP_ELAPSED[0]=$(($(date +%s) - STEP_START))
   echo "  Elapsed: $(step_timer $STEP_START)"
 fi
 
 # ═══════════════════════════════════════════
 # Step 2: Analysis (Whisper + Scene + Silence)
 # ═══════════════════════════════════════════
-if [ "$EDIT_ONLY" = false ] && [ "$SKIP_ANALYSIS" = false ]; then
+if [ "$EDIT_ONLY" = false ] && [ "$SKIP_ANALYSIS" = false ] && [ "$FROM_STEP" -le 2 ]; then
   echo ""
   echo "==========================================="
   echo " Step 2: Analysis (parallel)"
@@ -137,6 +221,7 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_ANALYSIS" = false ]; then
   SCENE_PID=""
   SILENCE_PID=""
   ANALYSIS_FAILED=false
+  STEP2_RAN=false
 
   # Step 2a: Whisper transcription (background)
   if [ "$FORCE" = true ] || [ ! -f "$TRANSCRIPT" ]; then
@@ -145,6 +230,7 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_ANALYSIS" = false ]; then
       --output "$TRANSCRIPT" \
       > "$WORK_DIR/whisper.log" 2>&1 &
     WHISPER_PID=$!
+    STEP2_RAN=true
   else
     echo "  [2a] [CACHE] Transcript exists, skipping"
   fi
@@ -156,6 +242,7 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_ANALYSIS" = false ]; then
       --output "$SCENES" \
       > "$WORK_DIR/scenes.log" 2>&1 &
     SCENE_PID=$!
+    STEP2_RAN=true
   else
     echo "  [2b] [CACHE] Scenes exist, skipping"
   fi
@@ -167,6 +254,7 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_ANALYSIS" = false ]; then
       --output "$SILENCES" \
       > "$WORK_DIR/silences.log" 2>&1 &
     SILENCE_PID=$!
+    STEP2_RAN=true
   else
     echo "  [2c] [CACHE] Silences exist, skipping"
   fi
@@ -214,6 +302,7 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_ANALYSIS" = false ]; then
       python "$SCRIPTS_DIR/convert_captions.py" "$TRANSCRIPT" \
         --output "$CAPTIONS"
       echo "  [OK] Captions: $CAPTIONS"
+      STEP2_RAN=true
     else
       echo "  [CACHE] Captions exist, skipping"
     fi
@@ -221,6 +310,12 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_ANALYSIS" = false ]; then
     echo "  [SKIP] No transcript available, skipping caption conversion"
   fi
 
+  if [ "$STEP2_RAN" = true ]; then
+    STEP_STATUS[1]="RAN"
+  else
+    STEP_STATUS[1]="CACHE"
+  fi
+  STEP_ELAPSED[1]=$(($(date +%s) - STEP_START))
   echo "  Elapsed: $(step_timer $STEP_START)"
 
 elif [ "$EDIT_ONLY" = false ] && [ "$SKIP_ANALYSIS" = true ]; then
@@ -234,7 +329,7 @@ fi
 # ═══════════════════════════════════════════
 # Step 3: AI Edit Script Generation
 # ═══════════════════════════════════════════
-if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ]; then
+if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ] && [ "$FROM_STEP" -le 3 ]; then
   echo ""
   echo "==========================================="
   echo " Step 3: AI Edit Script Generation"
@@ -248,6 +343,7 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ]; then
     echo "  [CACHE] AI-generated edit.json exists: $AI_EDIT"
     echo "  Using cached AI edit script"
     PROPS_FILE="$AI_EDIT"
+    STEP_STATUS[2]="CACHE"
   else
     echo "  Generating edit script via AI..."
     GENERATE_ARGS=(
@@ -262,8 +358,10 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ]; then
     python "$SCRIPTS_DIR/generate_edit.py" "${GENERATE_ARGS[@]}"
     echo "  [OK] AI edit script: $AI_EDIT"
     PROPS_FILE="$AI_EDIT"
+    STEP_STATUS[2]="RAN"
   fi
 
+  STEP_ELAPSED[2]=$(($(date +%s) - STEP_START))
   echo "  Elapsed: $(step_timer $STEP_START)"
 else
   # Skip AI: use the provided EDIT_JSON directly as props
@@ -281,60 +379,68 @@ fi
 # ═══════════════════════════════════════════
 # Step 4: Remotion Render
 # ═══════════════════════════════════════════
-echo ""
-echo "==========================================="
-echo " Step 4: Remotion Render"
-echo "==========================================="
-STEP_START=$(date +%s)
+if [ "$FROM_STEP" -le 4 ]; then
+  echo ""
+  echo "==========================================="
+  echo " Step 4: Remotion Render"
+  echo "==========================================="
+  STEP_START=$(date +%s)
 
-# Copy normalized video to Remotion public directory
-mkdir -p "$REMOTION_DIR/public/recordings"
-RECORDING_NAME="${BASENAME}_normalized.mp4"
+  # Copy normalized video to Remotion public directory
+  mkdir -p "$REMOTION_DIR/public/recordings"
+  RECORDING_NAME="${BASENAME}_normalized.mp4"
 
-if [ -f "$NORMALIZED" ]; then
-  cp "$NORMALIZED" "$REMOTION_DIR/public/recordings/$RECORDING_NAME"
-  echo "  Copied recording -> remotion/public/recordings/$RECORDING_NAME"
+  if [ -f "$NORMALIZED" ]; then
+    cp "$NORMALIZED" "$REMOTION_DIR/public/recordings/$RECORDING_NAME"
+    echo "  Copied recording -> remotion/public/recordings/$RECORDING_NAME"
+  fi
+
+  echo "  Props file: ${PROPS_FILE:-$EDIT_JSON}"
+  echo "  Rendering with Remotion (concurrency=$CONCURRENCY)..."
+  cd "$REMOTION_DIR"
+  npx remotion render ScriptDrivenVideo \
+    "$OUTPUT_FILE" \
+    --props="${PROPS_FILE:-$EDIT_JSON}" \
+    --concurrency="$CONCURRENCY" \
+    2>&1 | tail -5
+
+  STEP_STATUS[3]="RAN"
+  STEP_ELAPSED[3]=$(($(date +%s) - STEP_START))
+  echo "  Elapsed: $(step_timer $STEP_START)"
 fi
-
-echo "  Props file: ${PROPS_FILE:-$EDIT_JSON}"
-echo "  Rendering with Remotion (concurrency=$CONCURRENCY)..."
-cd "$REMOTION_DIR"
-npx remotion render ScriptDrivenVideo \
-  "$OUTPUT_FILE" \
-  --props="${PROPS_FILE:-$EDIT_JSON}" \
-  --concurrency="$CONCURRENCY" \
-  2>&1 | tail -5
-
-echo "  Elapsed: $(step_timer $STEP_START)"
 
 # ═══════════════════════════════════════════
 # Step 5: Audio Post-Processing (loudnorm)
 # ═══════════════════════════════════════════
-echo ""
-echo "==========================================="
-echo " Step 5: Audio Post-Processing"
-echo "==========================================="
-STEP_START=$(date +%s)
+if [ "$FROM_STEP" -le 5 ]; then
+  echo ""
+  echo "==========================================="
+  echo " Step 5: Audio Post-Processing"
+  echo "==========================================="
+  STEP_START=$(date +%s)
 
-if [ -f "$OUTPUT_FILE" ]; then
-  LOUDNORM_TEMP="${OUTPUT_FILE%.mp4}_loudnorm.mp4"
+  if [ -f "$OUTPUT_FILE" ]; then
+    LOUDNORM_TEMP="${OUTPUT_FILE%.mp4}_loudnorm.mp4"
 
-  echo "  Applying loudnorm (I=-14, TP=-1.5, LRA=11)..."
-  ffmpeg -y -i "$OUTPUT_FILE" \
-    -af "loudnorm=I=-14:TP=-1.5:LRA=11" \
-    -c:v copy \
-    "$LOUDNORM_TEMP" 2>/dev/null
+    echo "  Applying loudnorm (I=-14, TP=-1.5, LRA=11)..."
+    ffmpeg -y -i "$OUTPUT_FILE" \
+      -af "loudnorm=I=-14:TP=-1.5:LRA=11" \
+      -c:v copy \
+      "$LOUDNORM_TEMP" 2>/dev/null
 
-  mv "$LOUDNORM_TEMP" "$OUTPUT_FILE"
-  echo "  [OK] Audio normalized: $OUTPUT_FILE"
-else
-  echo "  [SKIP] Output file not found, skipping audio post-processing"
+    mv "$LOUDNORM_TEMP" "$OUTPUT_FILE"
+    echo "  [OK] Audio normalized: $OUTPUT_FILE"
+    STEP_STATUS[4]="RAN"
+  else
+    echo "  [SKIP] Output file not found, skipping audio post-processing"
+  fi
+
+  STEP_ELAPSED[4]=$(($(date +%s) - STEP_START))
+  echo "  Elapsed: $(step_timer $STEP_START)"
 fi
 
-echo "  Elapsed: $(step_timer $STEP_START)"
-
 # ═══════════════════════════════════════════
-# Done
+# Done — Pipeline Summary
 # ═══════════════════════════════════════════
 PIPELINE_END=$(date +%s)
 TOTAL_ELAPSED=$((PIPELINE_END - PIPELINE_START))
@@ -343,8 +449,44 @@ TOTAL_SECS=$((TOTAL_ELAPSED % 60))
 
 echo ""
 echo "==========================================="
-echo " Done"
+echo " Pipeline Summary"
 echo "==========================================="
+
+for i in 0 1 2 3 4; do
+  STEP_NUM=$((i + 1))
+  STATUS="${STEP_STATUS[$i]}"
+  ELAPSED="${STEP_ELAPSED[$i]}"
+  NAME="${STEP_NAMES[$i]}"
+
+  # Format status tag
+  case "$STATUS" in
+    RAN)   STATUS_TAG="[RAN]   " ;;
+    CACHE) STATUS_TAG="[CACHE] " ;;
+    SKIP)  STATUS_TAG="[SKIP]  " ;;
+    *)     STATUS_TAG="[----]  " ;;
+  esac
+
+  # Format elapsed time
+  if [ "$STATUS" = "SKIP" ]; then
+    ELAPSED_STR="-"
+  elif [ "$ELAPSED" -eq 0 ] && [ "$STATUS" = "CACHE" ]; then
+    ELAPSED_STR="0s"
+  else
+    E_MINS=$((ELAPSED / 60))
+    E_SECS=$((ELAPSED % 60))
+    if [ "$E_MINS" -gt 0 ]; then
+      ELAPSED_STR="${E_MINS}m ${E_SECS}s"
+    else
+      ELAPSED_STR="${E_SECS}s"
+    fi
+  fi
+
+  printf "  Step %d (%-11s) %s %s\n" "$STEP_NUM" "$NAME)" "$STATUS_TAG" "$ELAPSED_STR"
+done
+
+echo "  ---"
+printf "  %-27s          %s\n" "Total:" "${TOTAL_MINS}m ${TOTAL_SECS}s"
+
+echo ""
 echo "  Output: $OUTPUT_FILE"
 echo "  Size: $(du -h "$OUTPUT_FILE" 2>/dev/null | cut -f1 || echo 'N/A')"
-echo "  Total time: ${TOTAL_MINS}m ${TOTAL_SECS}s"
