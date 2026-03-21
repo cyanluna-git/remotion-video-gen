@@ -17,6 +17,8 @@
 remotion-video-gen/
 ├── PLAN.md                  # 계획 문서
 ├── CLAUDE.md                # 이 파일
+├── docs/
+│   └── MULTIMODAL_ARTIFACTS.md  # TTS/clip-ranking/vision-QA 계약 문서
 ├── pipeline.sh              # 메인 파이프라인 (bash)
 ├── remotion/                # Remotion React 프로젝트
 │   ├── src/
@@ -139,3 +141,4 @@ ANTHROPIC_API_KEY=sk-ant-...    # Claude API key for edit script generation
 - MP4, WAV 등 미디어 파일은 git에 포함하지 않음
 - `ANTHROPIC_API_KEY`는 `.env`에만, 절대 커밋하지 않음
 - Remotion은 Chromium 기반 렌더링 — 첫 실행 시 Chromium 다운로드 발생
+- 멀티모달 확장 계약의 source of truth는 `docs/MULTIMODAL_ARTIFACTS.md` 와 `scripts/multimodal_contracts.py`
