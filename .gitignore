@@ -10,3 +10,4 @@ dist/
 .env.local
 .DS_Store
 __pycache__/
+jobs/
