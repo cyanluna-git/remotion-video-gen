@@ -145,6 +145,60 @@ class BackendApiE2ETest(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/jobs/{job_id}/edit").status_code, 200)
         self.backend.run_pipeline.assert_awaited_once()
 
+    def test_artifact_retrieval_surfaces_tts_manifest_summary(self) -> None:
+        response = self.client.post(
+            "/api/jobs",
+            files={"video": ("demo.mp4", b"fake-video", "video/mp4")},
+            data={
+                "scenario": json.dumps(
+                    {
+                        "title": "TTS Job",
+                        "sections": [
+                            {
+                                "title": "Intro",
+                                "description": "Narrate intro",
+                                "timeRange": {"startSec": 0, "endSec": 5},
+                            }
+                        ],
+                    }
+                )
+            },
+        )
+        job_id = response.json()["id"]
+        job_dir = self.jobs_dir / job_id
+        voiceover_dir = job_dir / "voiceover"
+        voiceover_dir.mkdir(parents=True, exist_ok=True)
+        (voiceover_dir / "section-01-intro.wav").write_bytes(b"RIFFdemo")
+        (voiceover_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "artifact": "voiceover-manifest",
+                    "provider": {"name": "mock", "model": "demo-v1", "voice": "alloy"},
+                    "tracks": [
+                        {
+                            "id": "section-01-intro",
+                            "src": "voiceover/section-01-intro.wav",
+                            "startSec": 0,
+                            "durationSec": 1.5,
+                            "text": "Intro. Narrate intro",
+                        }
+                    ],
+                    "summary": {"status": "ready", "trackCount": 1},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        detail = self.client.get(f"/api/jobs/{job_id}")
+        self.assertEqual(detail.status_code, 200)
+        payload = detail.json()
+        self.assertTrue(payload["hasVoiceoverArtifacts"])
+        self.assertEqual(payload["ttsStatus"], "ready")
+        self.assertEqual(payload["ttsTrackCount"], 1)
+        self.assertEqual(payload["ttsProvider"], "mock")
+        self.assertEqual(payload["ttsModel"], "demo-v1")
+        self.assertEqual(payload["ttsVoice"], "alloy")
+
 
 class PipelineFlowE2ETest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:

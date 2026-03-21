@@ -74,6 +74,13 @@ print_usage() {
   echo "  --edit-output PATH Where generated edit.json should be saved (default: .work/edit.json)"
   echo "  --voiceover-manifest PATH"
   echo "                     Optional provider-agnostic narration manifest to feed into edit generation"
+  echo "  --tts-provider NAME"
+  echo "                     Optional TTS provider to generate voiceover assets before edit generation"
+  echo "  --tts-model NAME  TTS model override (default: gpt-4o-mini-tts)"
+  echo "  --tts-voice NAME  TTS voice override (default: alloy)"
+  echo "  --tts-format EXT  Voiceover audio format/extension (default: wav)"
+  echo "  --tts-instructions TEXT"
+  echo "                     Optional provider-specific narration style instructions"
   echo "  --skip-analysis    Skip Step 2 (use cached .work/ files)"
   echo "  --skip-ai          Skip Step 3 (use existing edit.json)"
   echo "  --edit-only        Only run Step 4 (Remotion render)"
@@ -99,6 +106,11 @@ PROMPT_OUTPUT=""
 SCENARIO_ERROR_OUTPUT=""
 EDIT_OUTPUT=""
 VOICEOVER_MANIFEST=""
+TTS_PROVIDER="${TTS_PROVIDER:-}"
+TTS_MODEL="${TTS_MODEL:-gpt-4o-mini-tts}"
+TTS_VOICE="${TTS_VOICE:-alloy}"
+TTS_AUDIO_FORMAT="${TTS_AUDIO_FORMAT:-wav}"
+TTS_INSTRUCTIONS="${TTS_INSTRUCTIONS:-}"
 SKIP_ANALYSIS=false
 SKIP_AI=false
 EDIT_ONLY=false
@@ -119,6 +131,11 @@ while [ $# -gt 0 ]; do
     --scenario-error-output) SCENARIO_ERROR_OUTPUT="$2"; shift ;;
     --edit-output) EDIT_OUTPUT="$2"; shift ;;
     --voiceover-manifest) VOICEOVER_MANIFEST="$2"; shift ;;
+    --tts-provider) TTS_PROVIDER="$2"; shift ;;
+    --tts-model) TTS_MODEL="$2"; shift ;;
+    --tts-voice) TTS_VOICE="$2"; shift ;;
+    --tts-format) TTS_AUDIO_FORMAT="$2"; shift ;;
+    --tts-instructions) TTS_INSTRUCTIONS="$2"; shift ;;
     --skip-analysis) SKIP_ANALYSIS=true ;;
     --skip-ai) SKIP_AI=true ;;
     --edit-only) EDIT_ONLY=true ;;
@@ -251,6 +268,28 @@ SCENES="$WORK_DIR/scenes.json"
 SILENCES="$WORK_DIR/silences.json"
 CAPTIONS="$WORK_DIR/captions.json"
 AI_EDIT="$EDIT_OUTPUT"
+DEFAULT_VOICEOVER_MANIFEST="$(dirname "$AI_EDIT")/voiceover/manifest.json"
+VOICEOVER_ERROR_OUTPUT="$(dirname "$DEFAULT_VOICEOVER_MANIFEST")/error.json"
+
+if [ -n "$TTS_PROVIDER" ]; then
+  TTS_MD5=$(printf '%s' "$SCENARIO_MD5|$TTS_PROVIDER|$TTS_MODEL|$TTS_VOICE|$TTS_AUDIO_FORMAT|$TTS_INSTRUCTIONS" | md5 -q 2>/dev/null || printf '%s' "$SCENARIO_MD5|$TTS_PROVIDER|$TTS_MODEL|$TTS_VOICE|$TTS_AUDIO_FORMAT|$TTS_INSTRUCTIONS" | md5sum | cut -d' ' -f1)
+  if [ -f "$WORK_DIR/tts.md5" ]; then
+    PREV_TTS_MD5=$(cat "$WORK_DIR/tts.md5")
+    if [ "$TTS_MD5" != "$PREV_TTS_MD5" ]; then
+      echo "  [INVALIDATE] TTS config changed, clearing voiceover cache"
+      rm -f "$AI_EDIT"
+      rm -rf "$(dirname "$DEFAULT_VOICEOVER_MANIFEST")"
+    fi
+  fi
+  echo "$TTS_MD5" > "$WORK_DIR/tts.md5"
+else
+  if [ -f "$WORK_DIR/tts.md5" ]; then
+    echo "  [INVALIDATE] TTS disabled, clearing voiceover cache"
+    rm -f "$AI_EDIT"
+    rm -rf "$(dirname "$DEFAULT_VOICEOVER_MANIFEST")"
+  fi
+  rm -f "$WORK_DIR/tts.md5"
+fi
 
 # ═══════════════════════════════════════════
 # Step 1: ffmpeg Preprocessing
@@ -445,9 +484,31 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ] && [ "$FROM_STEP" -le 3 ];
     STEP_STATUS[2]="CACHE"
   else
     echo "  Generating edit script via AI..."
-    if [ -z "$VOICEOVER_MANIFEST" ]; then
-      DEFAULT_VOICEOVER_MANIFEST="$(dirname "$AI_EDIT")/voiceover/manifest.json"
-      [ -f "$DEFAULT_VOICEOVER_MANIFEST" ] && VOICEOVER_MANIFEST="$DEFAULT_VOICEOVER_MANIFEST"
+    if [ -z "$VOICEOVER_MANIFEST" ] && [ -n "$TTS_PROVIDER" ]; then
+      if [ "$FORCE" = true ] || [ ! -f "$DEFAULT_VOICEOVER_MANIFEST" ]; then
+        echo "  [3a] Generating voiceover via TTS provider: $TTS_PROVIDER"
+        rm -rf "$(dirname "$DEFAULT_VOICEOVER_MANIFEST")"
+        TTS_ARGS=(
+          --scenario "$SCENARIO_FILE"
+          --output "$DEFAULT_VOICEOVER_MANIFEST"
+          --provider "$TTS_PROVIDER"
+          --model "$TTS_MODEL"
+          --voice "$TTS_VOICE"
+          --audio-format "$TTS_AUDIO_FORMAT"
+          --error-output "$VOICEOVER_ERROR_OUTPUT"
+        )
+        [ -n "$TTS_INSTRUCTIONS" ] && TTS_ARGS+=(--instructions "$TTS_INSTRUCTIONS")
+        if python3 "$SCRIPTS_DIR/generate_voiceover.py" "${TTS_ARGS[@]}"; then
+          echo "  [3a] [OK] Voiceover manifest: $DEFAULT_VOICEOVER_MANIFEST"
+          VOICEOVER_MANIFEST="$DEFAULT_VOICEOVER_MANIFEST"
+        else
+          echo "  [3a] [WARN] TTS generation failed; continuing without voiceover"
+          VOICEOVER_MANIFEST=""
+        fi
+      else
+        echo "  [3a] [CACHE] Voiceover manifest exists: $DEFAULT_VOICEOVER_MANIFEST"
+        VOICEOVER_MANIFEST="$DEFAULT_VOICEOVER_MANIFEST"
+      fi
     fi
     GENERATE_ARGS=(
       --scenario "$SCENARIO_FILE"

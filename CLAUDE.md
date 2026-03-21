@@ -36,6 +36,8 @@ remotion-video-gen/
 │   ├── detect_silence.py
 │   ├── generate_scenario.py
 │   ├── generate_edit.py
+│   ├── generate_voiceover.py
+│   ├── tts_providers.py
 │   └── convert_captions.py
 ├── scenarios/               # 시나리오 JSON/MD
 ├── output/                  # 최종 출력 (.gitignore)
@@ -111,6 +113,12 @@ remotion-video-gen/
 # AI-assisted 전체 파이프라인
 ./pipeline.sh input.mp4 --auto-scenario --title "Demo Run" --language ko
 
+# TTS 포함 전체 파이프라인
+TTS_PROVIDER=openai OPENAI_API_KEY=sk-... ./pipeline.sh input.mp4 --auto-scenario
+
+# 로컬 mock TTS로 voiceover manifest만 점검
+python scripts/generate_voiceover.py --scenario .work/scenario.generated.json --output .work/voiceover/manifest.json --provider mock
+
 # Remotion 프리뷰
 cd remotion && npx remotion studio
 
@@ -133,6 +141,12 @@ python scripts/detect_silence.py input.mp4
 ```bash
 # .env (gitignored)
 ANTHROPIC_API_KEY=sk-ant-...    # Claude API key for edit script generation
+OPENAI_API_KEY=sk-...           # Optional OpenAI TTS provider key
+TTS_PROVIDER=                   # Optional: openai | mock
+TTS_MODEL=gpt-4o-mini-tts       # Default OpenAI TTS model
+TTS_VOICE=alloy                 # Default OpenAI voice
+TTS_AUDIO_FORMAT=wav            # Voiceover asset format
+TTS_INSTRUCTIONS=               # Optional narration style instructions
 ```
 
 ## Important Notes

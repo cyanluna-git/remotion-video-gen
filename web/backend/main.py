@@ -85,6 +85,56 @@ def voiceover_summary(edit: dict | None) -> tuple[bool, int]:
     return False, 0
 
 
+def tts_summary(job_dir: Path) -> dict:
+    """Return TTS artifact summary derived from voiceover manifest/error files."""
+    voiceover_dir = job_dir / "voiceover"
+    manifest_path = voiceover_dir / "manifest.json"
+    error_path = voiceover_dir / "error.json"
+    summary = {
+        "ttsStatus": "skipped",
+        "ttsTrackCount": 0,
+        "ttsProvider": None,
+        "ttsModel": None,
+        "ttsVoice": None,
+        "ttsError": None,
+    }
+
+    if manifest_path.exists():
+        try:
+            with manifest_path.open("r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            summary["ttsStatus"] = "failed"
+            summary["ttsError"] = "Invalid voiceover manifest."
+            return summary
+
+        provider = manifest.get("provider", {})
+        manifest_summary = manifest.get("summary", {})
+        tracks = manifest.get("tracks", [])
+        summary["ttsStatus"] = str(
+            manifest_summary.get("status") or manifest.get("status") or "ready"
+        )
+        summary["ttsTrackCount"] = int(
+            manifest_summary.get("trackCount", len(tracks) if isinstance(tracks, list) else 0)
+        )
+        if isinstance(provider, dict):
+            summary["ttsProvider"] = provider.get("name")
+            summary["ttsModel"] = provider.get("model")
+            summary["ttsVoice"] = provider.get("voice")
+        return summary
+
+    if error_path.exists():
+        summary["ttsStatus"] = "failed"
+        try:
+            with error_path.open("r", encoding="utf-8") as f:
+                error_payload = json.load(f)
+            summary["ttsError"] = error_payload.get("message")
+        except (json.JSONDecodeError, OSError):
+            summary["ttsError"] = "Voiceover generation failed."
+
+    return summary
+
+
 def job_summary(job_dir: Path) -> Optional[dict]:
     """Build a lightweight summary dict from a job directory."""
     meta_path = job_dir / "meta.json"
@@ -411,6 +461,7 @@ async def get_job(job_id: str) -> dict:
     meta["hasVoiceoverArtifacts"] = voiceover_dir.exists()
     meta["hasVoiceover"] = False
     meta["voiceoverTrackCount"] = 0
+    meta.update(tts_summary(job_dir))
 
     if edit_path.exists():
         try:
