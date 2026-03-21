@@ -23,13 +23,31 @@ export interface ScenarioForm {
   options: ScenarioOptions;
 }
 
+export type JobStatus = 'queued' | 'running' | 'done' | 'failed';
+
+export interface JobSummary {
+  id: string;
+  title: string;
+  status: JobStatus;
+  createdAt: string;
+  completedAt: string | null;
+  duration: number | null;
+  fileSize: number;
+}
+
 export interface Job {
   id: string;
-  status: string;
-  scenario: ScenarioForm;
-  created_at: string;
-  updated_at: string;
-  output_url?: string;
-  thumbnail_url?: string;
-  error?: string;
+  title: string;
+  status: JobStatus;
+  currentStep: number;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  fileSize: number;
+  duration: number | null;
+  log: string;
+  hasVideo: boolean;
+  hasThumbnail: boolean;
+  hasEdit: boolean;
+  scenario?: ScenarioForm;
 }
