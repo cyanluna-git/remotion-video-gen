@@ -62,6 +62,20 @@ interface JobSnapshot {
   qaStatus: string;
   qaWarningCount: number;
   qa: Record<string, unknown>;
+  hasVoiceover: boolean;
+  hasVoiceoverArtifacts: boolean;
+  voiceoverTrackCount: number;
+  voiceoverArtifacts: string[];
+  voiceoverManifest: Record<string, unknown>;
+  ttsStatus: string;
+  ttsTrackCount: number;
+  ttsProvider: string | null;
+  hasClipRanking: boolean;
+  clipRankingCandidateCount: number;
+  clipRankingTopCandidateIds: string[];
+  clipRanking: Record<string, unknown>;
+  qaReviewMethods: string[];
+  hasVisionQa: boolean;
   scenario: ScenarioData;
 }
 
@@ -127,7 +141,37 @@ function buildSnapshots(job: {
         warningCount: 0,
         failCount: 0,
       },
+      reviews: {
+        heuristic: { summary: { status: 'pass', warningCount: 0, failCount: 0 } },
+        vision: { summary: { status: 'pass', warningCount: 0, failCount: 0 } },
+      },
     },
+    hasVoiceover: true,
+    hasVoiceoverArtifacts: true,
+    voiceoverTrackCount: 2,
+    voiceoverArtifacts: ['manifest.json', 'track-1.wav', 'track-2.wav'],
+    voiceoverManifest: {
+      provider: { name: 'mock', model: 'demo-v1', voice: 'alloy' },
+      summary: { status: 'ready', trackCount: 2 },
+      tracks: [
+        { src: 'voiceover/track-1.wav', startSec: 0, durationSec: 1.1 },
+        { src: 'voiceover/track-2.wav', startSec: 4, durationSec: 1.4 },
+      ],
+    },
+    ttsStatus: 'ready',
+    ttsTrackCount: 2,
+    ttsProvider: 'mock',
+    hasClipRanking: true,
+    clipRankingCandidateCount: 3,
+    clipRankingTopCandidateIds: ['scene-01', 'scene-02', 'scene-03'],
+    clipRanking: {
+      summary: { candidateCount: 3, topCandidateIds: ['scene-01', 'scene-02', 'scene-03'] },
+      candidates: [
+        { id: 'scene-01', rank: 1, startSec: 0, endSec: 4, score: 0.92, sourceSignals: ['scenes', 'transcript'] },
+      ],
+    },
+    qaReviewMethods: ['heuristic', 'vision'],
+    hasVisionQa: true,
     scenario: job.scenario,
   };
 
@@ -147,6 +191,20 @@ function buildSnapshots(job: {
       qaStatus: 'pass',
       qaWarningCount: 0,
       qa: {},
+      hasVoiceover: false,
+      hasVoiceoverArtifacts: false,
+      voiceoverTrackCount: 0,
+      voiceoverArtifacts: [],
+      voiceoverManifest: {},
+      ttsStatus: 'skipped',
+      ttsTrackCount: 0,
+      ttsProvider: null,
+      hasClipRanking: false,
+      clipRankingCandidateCount: 0,
+      clipRankingTopCandidateIds: [],
+      clipRanking: {},
+      qaReviewMethods: [],
+      hasVisionQa: false,
       log: 'Step 1: Preprocessing',
     },
     {
@@ -160,6 +218,23 @@ function buildSnapshots(job: {
       hasEdit: false,
       hasQa: false,
       qa: {},
+      hasVoiceover: false,
+      hasVoiceoverArtifacts: false,
+      voiceoverTrackCount: 0,
+      voiceoverArtifacts: [],
+      voiceoverManifest: {},
+      ttsStatus: 'skipped',
+      ttsTrackCount: 0,
+      ttsProvider: null,
+      hasClipRanking: true,
+      clipRankingCandidateCount: 3,
+      clipRankingTopCandidateIds: ['scene-01', 'scene-02', 'scene-03'],
+      clipRanking: {
+        summary: { candidateCount: 3, topCandidateIds: ['scene-01', 'scene-02', 'scene-03'] },
+        candidates: [{ id: 'scene-01', rank: 1, startSec: 0, endSec: 4, score: 0.92, sourceSignals: ['scenes'] }],
+      },
+      qaReviewMethods: [],
+      hasVisionQa: false,
       log: ['Step 1: Preprocessing', 'Step 2: Analysis', 'Step 3: AI Edit'].join(
         '\n',
       ),
@@ -227,6 +302,12 @@ function buildSummary(job: MockJob) {
     completedAt: snapshot.completedAt,
     duration: snapshot.duration,
     fileSize: snapshot.fileSize,
+    ttsStatus: snapshot.ttsStatus,
+    ttsTrackCount: snapshot.ttsTrackCount,
+    hasVisionQa: snapshot.hasVisionQa,
+    qaReviewMethods: snapshot.qaReviewMethods,
+    hasClipRanking: snapshot.hasClipRanking,
+    clipRankingCandidateCount: snapshot.clipRankingCandidateCount,
   };
 }
 
@@ -374,6 +455,18 @@ test('covers upload, progress, preview, edit view, download link, and history fo
 
     await expect(page).toHaveURL(/\/jobs\/job-1$/);
     await waitForJobCompletion(page);
+    await expect(page.getByText('Ranked clips: 3')).toBeVisible();
+    await expect(page.getByText('Vision QA')).toBeVisible();
+    await expect(page.getByText('Narration', { exact: true })).toBeVisible();
+    await expect(page.getByText('Clip Ranking', { exact: true })).toBeVisible();
+    await expect(page.getByText('QA Review', { exact: true })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Narration Artifacts' }).click();
+    await expect(page.getByText('"provider"')).toBeVisible();
+    await page.getByRole('button', { name: 'Clip Ranking JSON' }).click();
+    await expect(page.getByText('"scene-01"')).toBeVisible();
+    await page.getByRole('button', { name: 'Post-render QA' }).click();
+    await expect(page.getByText('"vision"')).toBeVisible();
 
     const previewVideo = page.locator('video[controls]');
     await expect(previewVideo).toBeVisible();
@@ -391,6 +484,9 @@ test('covers upload, progress, preview, edit view, download link, and history fo
     await page.getByRole('link', { name: 'History', exact: true }).click();
     await expect(page).toHaveURL(/\/history$/);
     await expect(page.getByText('UI Flow Run 1')).toBeVisible();
+    await expect(page.getByText('TTS 2').first()).toBeVisible();
+    await expect(page.getByText('Ranked 3')).toBeVisible();
+    await expect(page.getByText('Vision QA')).toBeVisible();
     const firstThumb = page.locator('img[alt="Thumbnail for UI Flow Run 1"]');
     await expect(firstThumb).toBeVisible();
     await expect
@@ -409,6 +505,7 @@ test('covers upload, progress, preview, edit view, download link, and history fo
     await page.getByRole('link', { name: 'History', exact: true }).click();
     await expect(page.getByText('UI Flow Run 2')).toBeVisible();
     await expect(page.getByText('UI Flow Run 1')).toBeVisible();
+    await expect(page.getByText('TTS 2').first()).toBeVisible();
     await expect(page.getByText(/^2 videos total$/)).toBeVisible();
   },
 );

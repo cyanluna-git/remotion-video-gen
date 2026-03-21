@@ -299,6 +299,113 @@ class BackendApiE2ETest(unittest.TestCase):
         self.assertTrue(summary["hasClipRanking"])
         self.assertEqual(summary["clipRankingCandidateCount"], 2)
 
+    def test_multimodal_detail_surfaces_combined_artifacts(self) -> None:
+        response = self.client.post(
+            "/api/jobs",
+            files={"video": ("demo.mp4", b"fake-video", "video/mp4")},
+            data={
+                "scenario": json.dumps(
+                    {
+                        "title": "Multimodal Job",
+                        "sections": [
+                            {
+                                "title": "Intro",
+                                "description": "Review all artifacts",
+                                "timeRange": {"startSec": 0, "endSec": 5},
+                            }
+                        ],
+                    }
+                )
+            },
+        )
+        job_id = response.json()["id"]
+        job_dir = self.jobs_dir / job_id
+        output_dir = job_dir / "output"
+        voiceover_dir = job_dir / "voiceover"
+        analysis_dir = job_dir / "analysis"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        voiceover_dir.mkdir(parents=True, exist_ok=True)
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+
+        (voiceover_dir / "track.wav").write_bytes(b"RIFFdemo")
+        (voiceover_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "provider": {"name": "mock", "model": "demo-v1", "voice": "alloy"},
+                    "tracks": [{"src": "voiceover/track.wav", "startSec": 0, "durationSec": 1.2}],
+                    "summary": {"status": "ready", "trackCount": 1},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (analysis_dir / "clip-ranking.json").write_text(
+            json.dumps(
+                {
+                    "summary": {"candidateCount": 2, "topCandidateIds": ["scene-01", "scene-02"]},
+                    "candidates": [{"id": "scene-01", "rank": 1, "startSec": 0, "endSec": 4, "score": 0.8, "sourceSignals": ["scenes"]}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (output_dir / "qa.json").write_text(
+            json.dumps(
+                {
+                    "summary": {"status": "warn", "warningCount": 1, "failCount": 0},
+                    "reviews": {
+                        "heuristic": {"summary": {"status": "pass", "warningCount": 0, "failCount": 0}},
+                        "vision": {"summary": {"status": "warn", "warningCount": 1, "failCount": 0}},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        detail = self.client.get(f"/api/jobs/{job_id}")
+        self.assertEqual(detail.status_code, 200)
+        payload = detail.json()
+        self.assertEqual(payload["ttsStatus"], "ready")
+        self.assertEqual(payload["clipRankingCandidateCount"], 2)
+        self.assertTrue(payload["hasVisionQa"])
+        self.assertEqual(payload["qaReviewMethods"], ["heuristic", "vision"])
+        self.assertIn("voiceoverManifest", payload)
+        self.assertIn("clipRanking", payload)
+
+    def test_optional_stage_failures_do_not_break_baseline_detail(self) -> None:
+        response = self.client.post(
+            "/api/jobs",
+            files={"video": ("demo.mp4", b"fake-video", "video/mp4")},
+            data={
+                "scenario": json.dumps(
+                    {
+                        "title": "Failure Tolerant Job",
+                        "sections": [
+                            {
+                                "title": "Only",
+                                "description": "Baseline still works",
+                                "timeRange": {"startSec": 0, "endSec": 5},
+                            }
+                        ],
+                    }
+                )
+            },
+        )
+        job_id = response.json()["id"]
+        job_dir = self.jobs_dir / job_id
+        voiceover_dir = job_dir / "voiceover"
+        voiceover_dir.mkdir(parents=True, exist_ok=True)
+        (voiceover_dir / "error.json").write_text(
+            json.dumps({"status": "failed", "message": "Missing provider credentials"}),
+            encoding="utf-8",
+        )
+
+        detail = self.client.get(f"/api/jobs/{job_id}")
+        self.assertEqual(detail.status_code, 200)
+        payload = detail.json()
+        self.assertEqual(payload["ttsStatus"], "failed")
+        self.assertEqual(payload["ttsError"], "Missing provider credentials")
+        self.assertFalse(payload["hasClipRanking"])
+        self.assertFalse(payload.get("hasVisionQa", False))
+
 
 class PipelineFlowE2ETest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
