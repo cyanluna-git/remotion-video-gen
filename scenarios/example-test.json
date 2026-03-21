@@ -1,0 +1,21 @@
+{
+  "title": "Test Video",
+  "language": "en",
+  "sections": [
+    {
+      "title": "Full Recording",
+      "description": "Entire 10-second test recording for Phase 1 E2E validation.",
+      "timeRange": {
+        "startSec": 0,
+        "endSec": 10
+      },
+      "emphasis": [
+        {
+          "timeSec": 5,
+          "type": "caption",
+          "text": "This is a test caption"
+        }
+      ]
+    }
+  ]
+}
