@@ -1,5 +1,5 @@
 import React from "react";
-import { AbsoluteFill, Sequence } from "remotion";
+import { AbsoluteFill, Sequence, staticFile } from "remotion";
 import { TransitionSeries, linearTiming } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
 import { slide } from "@remotion/transitions/slide";
@@ -49,7 +49,8 @@ function renderEntryContent(
   sources: Record<string, string>,
 ): React.ReactNode {
   if (entry.type === "clip") {
-    const src = sources[entry.source] ?? entry.source;
+    const rawSrc = sources[entry.source] ?? entry.source;
+    const src = rawSrc.startsWith("http") ? rawSrc : staticFile(rawSrc);
     return (
       <ClipSegment
         src={src}
