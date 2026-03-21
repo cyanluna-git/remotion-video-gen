@@ -106,6 +106,9 @@ remotion-video-gen/
 # 전체 파이프라인
 ./pipeline.sh input.mp4 scenario.json
 
+# AI-assisted 전체 파이프라인
+./pipeline.sh input.mp4 --auto-scenario --title "Demo Run" --language ko
+
 # Remotion 프리뷰
 cd remotion && npx remotion studio
 

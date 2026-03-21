@@ -24,6 +24,7 @@ PIPELINE_SH = PROJECT_ROOT / "pipeline.sh"
 
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from scenario_contract import ScenarioContractError, normalize_scenario
+from scenario_generation import derive_title
 
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -77,6 +78,7 @@ def job_summary(job_dir: Path) -> Optional[dict]:
         "id": meta.get("id", job_dir.name),
         "title": meta.get("title", ""),
         "status": meta.get("status", "unknown"),
+        "inputMode": meta.get("inputMode", "manual"),
         "createdAt": meta.get("createdAt"),
         "completedAt": meta.get("completedAt"),
         "duration": meta.get("duration"),
@@ -100,17 +102,44 @@ async def run_pipeline(job_id: str, job_dir: Path, edit_only: bool = False) -> N
 
     input_video = job_dir / "input.mp4"
     scenario = job_dir / "scenario.json"
+    edit_path = job_dir / "edit.json"
+    scenario_prompt = job_dir / "scenario.prompt.txt"
+    scenario_error = job_dir / "scenario.error.txt"
     output_dir = job_dir / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
     output = output_dir / "final.mp4"
 
-    cmd = [
-        str(PIPELINE_SH),
-        str(input_video),
-        str(scenario),
-        "--output",
-        str(output),
-    ]
+    cmd = [str(PIPELINE_SH), str(input_video)]
+
+    if meta.get("inputMode") == "auto":
+        cmd.extend(
+            [
+                "--auto-scenario",
+                "--scenario-output",
+                str(scenario),
+                "--prompt-output",
+                str(scenario_prompt),
+                "--scenario-error-output",
+                str(scenario_error),
+            ]
+        )
+        title_hint = str(meta.get("titleHint") or "").strip()
+        language_hint = str(meta.get("languageHint") or "").strip()
+        if title_hint:
+            cmd.extend(["--title", title_hint])
+        if language_hint:
+            cmd.extend(["--language", language_hint])
+    else:
+        cmd.append(str(scenario))
+
+    cmd.extend(
+        [
+            "--edit-output",
+            str(edit_path),
+            "--output",
+            str(output),
+        ]
+    )
 
     if edit_only:
         cmd.append("--edit-only")
@@ -199,9 +228,12 @@ async def run_pipeline(job_id: str, job_dir: Path, edit_only: bool = False) -> N
 @app.post("/api/jobs")
 async def create_job(
     video: UploadFile = File(...),
-    scenario: str = Form(...),
+    scenario: str | None = Form(None),
+    auto_scenario: bool = Form(False, alias="autoScenario"),
+    title: str | None = Form(None),
+    language: str | None = Form(None),
 ) -> JSONResponse:
-    """Accept a video + scenario JSON, queue a pipeline run."""
+    """Accept a video with either manual scenario JSON or auto-scenario hints."""
     job_id = str(uuid.uuid4())
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -212,27 +244,49 @@ async def create_job(
         while chunk := await video.read(1024 * 1024):
             f.write(chunk)
 
-    # Parse and save scenario
-    try:
-        scenario_data = json.loads(scenario)
-    except json.JSONDecodeError as exc:
+    if auto_scenario and scenario:
         shutil.rmtree(job_dir, ignore_errors=True)
-        raise HTTPException(status_code=400, detail=f"Invalid scenario JSON: {exc}")
-    try:
-        scenario_data = normalize_scenario(scenario_data)
-    except ScenarioContractError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either manual scenario JSON or autoScenario=true, not both.",
+        )
+    if not auto_scenario and not scenario:
         shutil.rmtree(job_dir, ignore_errors=True)
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(
+            status_code=400,
+            detail="Manual mode requires scenario JSON. Use autoScenario=true for AI-assisted submission.",
+        )
 
-    scenario_path = job_dir / "scenario.json"
-    with scenario_path.open("w", encoding="utf-8") as f:
-        json.dump(scenario_data, f, indent=2, ensure_ascii=False)
+    title_hint = (title or "").strip()
+    language_hint = (language or "").strip()
+    resolved_title = ""
 
-    # Build meta.json
-    title = scenario_data.get("title", scenario_data.get("name", "Untitled"))
+    if auto_scenario:
+        resolved_title = derive_title(title_hint or None, video.filename)
+    else:
+        try:
+            scenario_data = json.loads(scenario or "")
+        except json.JSONDecodeError as exc:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail=f"Invalid scenario JSON: {exc}")
+        try:
+            scenario_data = normalize_scenario(scenario_data)
+        except ScenarioContractError as exc:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        scenario_path = job_dir / "scenario.json"
+        with scenario_path.open("w", encoding="utf-8") as f:
+            json.dump(scenario_data, f, indent=2, ensure_ascii=False)
+
+        resolved_title = scenario_data.get("title", scenario_data.get("name", "Untitled"))
+
     meta = {
         "id": job_id,
-        "title": title,
+        "title": resolved_title,
+        "inputMode": "auto" if auto_scenario else "manual",
+        "titleHint": title_hint or None,
+        "languageHint": language_hint or None,
         "status": "queued",
         "currentStep": 0,
         "createdAt": utcnow_iso(),
@@ -292,9 +346,10 @@ async def get_job(job_id: str) -> dict:
     if not edit_path.exists():
         edit_path = job_dir / "edit.json"
     meta["hasEdit"] = edit_path.exists()
+    scenario_path = job_dir / "scenario.json"
+    meta["hasScenario"] = scenario_path.exists()
 
     # Include scenario if available
-    scenario_path = job_dir / "scenario.json"
     if scenario_path.exists():
         try:
             with scenario_path.open("r", encoding="utf-8") as f:

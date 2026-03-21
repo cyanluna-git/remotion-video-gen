@@ -12,6 +12,7 @@ export function JobPage(): React.JSX.Element {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(false);
+  const [scenarioOpen, setScenarioOpen] = useState(false);
   const [editJson, setEditJson] = useState<Record<string, unknown> | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [rerendering, setRerendering] = useState(false);
@@ -133,6 +134,16 @@ export function JobPage(): React.JSX.Element {
             <p className="text-sm text-gray-400 mt-1">
               {job.id}
             </p>
+            <div className="mt-2 flex items-center gap-2">
+              <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600">
+                {job.inputMode === 'auto' ? 'AI-assisted mode' : 'Manual scenario'}
+              </span>
+              {job.languageHint && (
+                <span className="inline-flex items-center rounded-full bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
+                  Language hint: {job.languageHint}
+                </span>
+              )}
+            </div>
           </div>
           <StatusBadge status={job.status} />
         </div>
@@ -156,6 +167,35 @@ export function JobPage(): React.JSX.Element {
 
         {/* Log Viewer */}
         <LogViewer log={job.log} isOpen={logOpen} onToggle={() => setLogOpen((v) => !v)} />
+
+        {job.scenario && (
+          <div className="border border-gray-200 rounded-lg overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setScenarioOpen((prev) => !prev)}
+              className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              <span>Scenario JSON</span>
+              <svg
+                className={`w-4 h-4 transition-transform ${scenarioOpen ? 'rotate-180' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {scenarioOpen && (
+              <pre
+                className="px-4 py-3 text-sm text-gray-300 font-mono whitespace-pre-wrap break-words overflow-y-auto border-t border-gray-200"
+                style={{ backgroundColor: '#1a1a2e', maxHeight: '320px' }}
+              >
+                {JSON.stringify(job.scenario, null, 2)}
+              </pre>
+            )}
+          </div>
+        )}
 
         {/* Done: Video player + download */}
         {job.status === 'done' && job.hasVideo && (

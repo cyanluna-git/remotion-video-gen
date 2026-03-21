@@ -133,6 +133,9 @@ export function JobCard({ job, onDelete }: JobCardProps): React.JSX.Element {
             )}
             {STATUS_LABEL[job.status]}
           </span>
+          <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
+            {job.inputMode === 'auto' ? 'AI-assisted' : 'Manual'}
+          </span>
         </div>
 
         <p className="text-xs text-gray-400">

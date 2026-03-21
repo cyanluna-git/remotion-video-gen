@@ -3,7 +3,9 @@ set -euo pipefail
 
 # ═══════════════════════════════════════════
 # Remotion Video Gen Pipeline
-# Usage: ./pipeline.sh <input.mp4> <edit.json> [options]
+# Usage:
+#   ./pipeline.sh <input.mp4> <scenario-or-edit.json> [options]
+#   ./pipeline.sh <input.mp4> --auto-scenario [options]
 # ═══════════════════════════════════════════
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -50,14 +52,26 @@ for arg in "$@"; do
 done
 
 # Parse args
-if [ $# -lt 2 ]; then
-  echo "Usage: ./pipeline.sh <input.mp4> <edit-or-scenario.json> [options]"
+print_usage() {
+  echo "Usage:"
+  echo "  ./pipeline.sh <input.mp4> <edit-or-scenario.json> [options]"
+  echo "  ./pipeline.sh <input.mp4> --auto-scenario [options]"
   echo ""
   echo "Args:"
   echo "  input.mp4          Source video file"
-  echo "  edit.json          Edit script (direct) or scenario (for AI generation)"
+  echo "  edit-or-scenario   Manual scenario JSON, or direct edit JSON when --skip-ai/--edit-only"
   echo ""
   echo "Options:"
+  echo "  --auto-scenario    Generate scenario.json from Step 2 artifacts before edit generation"
+  echo "  --title TEXT       Optional title hint for auto-scenario mode"
+  echo "  --language CODE    Optional language hint for auto-scenario mode"
+  echo "  --scenario-output PATH"
+  echo "                     Where generated scenario.json should be saved in auto mode"
+  echo "  --prompt-output PATH"
+  echo "                     Where generated scenario prompt text should be saved in auto mode"
+  echo "  --scenario-error-output PATH"
+  echo "                     Where scenario-generation errors should be saved in auto mode"
+  echo "  --edit-output PATH Where generated edit.json should be saved (default: .work/edit.json)"
   echo "  --skip-analysis    Skip Step 2 (use cached .work/ files)"
   echo "  --skip-ai          Skip Step 3 (use existing edit.json)"
   echo "  --edit-only        Only run Step 4 (Remotion render)"
@@ -66,11 +80,22 @@ if [ $# -lt 2 ]; then
   echo "  --from-step=N      Start from step N (1-5), skip earlier steps"
   echo "  --output PATH      Output file (default: output/final.mp4)"
   echo "  --concurrency N    Remotion parallel frames (default: 4)"
+}
+
+if [ $# -lt 1 ]; then
+  print_usage
   exit 1
 fi
 
 INPUT="$(realpath "$1")"
-EDIT_JSON="$(realpath "$2")"
+MANUAL_INPUT=""
+AUTO_SCENARIO=false
+TITLE_HINT=""
+LANGUAGE_HINT=""
+SCENARIO_OUTPUT=""
+PROMPT_OUTPUT=""
+SCENARIO_ERROR_OUTPUT=""
+EDIT_OUTPUT=""
 SKIP_ANALYSIS=false
 SKIP_AI=false
 EDIT_ONLY=false
@@ -80,9 +105,16 @@ OUTPUT_FILE="$OUTPUT_DIR/final.mp4"
 CONCURRENCY=4
 
 # Parse optional flags
-shift 2
+shift
 while [ $# -gt 0 ]; do
   case "$1" in
+    --auto-scenario) AUTO_SCENARIO=true ;;
+    --title) TITLE_HINT="$2"; shift ;;
+    --language) LANGUAGE_HINT="$2"; shift ;;
+    --scenario-output) SCENARIO_OUTPUT="$2"; shift ;;
+    --prompt-output) PROMPT_OUTPUT="$2"; shift ;;
+    --scenario-error-output) SCENARIO_ERROR_OUTPUT="$2"; shift ;;
+    --edit-output) EDIT_OUTPUT="$2"; shift ;;
     --skip-analysis) SKIP_ANALYSIS=true ;;
     --skip-ai) SKIP_AI=true ;;
     --edit-only) EDIT_ONLY=true ;;
@@ -90,10 +122,48 @@ while [ $# -gt 0 ]; do
     --from-step=*) FROM_STEP="${1#--from-step=}" ;;
     --output) OUTPUT_FILE="$2"; shift ;;
     --concurrency) CONCURRENCY="$2"; shift ;;
-    *) echo "Unknown option: $1"; exit 1 ;;
+    --help|-h) print_usage; exit 0 ;;
+    --*) echo "Unknown option: $1"; exit 1 ;;
+    *)
+      if [ -n "$MANUAL_INPUT" ]; then
+        echo "Unexpected extra positional argument: $1"
+        exit 1
+      fi
+      MANUAL_INPUT="$(realpath "$1")"
+      ;;
   esac
   shift
 done
+
+if [ "$AUTO_SCENARIO" = true ] && [ -n "$MANUAL_INPUT" ]; then
+  echo "Error: manual scenario input cannot be combined with --auto-scenario."
+  exit 1
+fi
+
+if [ "$AUTO_SCENARIO" = false ] && [ -z "$MANUAL_INPUT" ]; then
+  echo "Error: manual mode requires <edit-or-scenario.json>."
+  print_usage
+  exit 1
+fi
+
+if [ -z "$EDIT_OUTPUT" ]; then
+  EDIT_OUTPUT="$WORK_DIR/edit.json"
+fi
+
+if [ "$AUTO_SCENARIO" = true ]; then
+  if [ -z "$SCENARIO_OUTPUT" ]; then
+    SCENARIO_OUTPUT="$WORK_DIR/scenario.generated.json"
+  fi
+  if [ -z "$PROMPT_OUTPUT" ]; then
+    PROMPT_OUTPUT="${SCENARIO_OUTPUT%.json}.prompt.txt"
+  fi
+  if [ -z "$SCENARIO_ERROR_OUTPUT" ]; then
+    SCENARIO_ERROR_OUTPUT="${SCENARIO_OUTPUT%.json}.error.txt"
+  fi
+  SCENARIO_FILE="$SCENARIO_OUTPUT"
+else
+  SCENARIO_FILE="$MANUAL_INPUT"
+fi
 
 mkdir -p "$WORK_DIR" "$OUTPUT_DIR"
 
@@ -121,12 +191,17 @@ fi
 echo "$INPUT_MD5" > "$WORK_DIR/input.md5"
 
 # ── Scenario/edit JSON change detection ──
-SCENARIO_MD5=$(md5 -q "$EDIT_JSON" 2>/dev/null || md5sum "$EDIT_JSON" | cut -d' ' -f1)
+if [ "$AUTO_SCENARIO" = true ]; then
+  SCENARIO_MD5=$(printf '%s' "$INPUT_MD5|$TITLE_HINT|$LANGUAGE_HINT" | md5 -q 2>/dev/null || printf '%s' "$INPUT_MD5|$TITLE_HINT|$LANGUAGE_HINT" | md5sum | cut -d' ' -f1)
+else
+  SCENARIO_MD5=$(md5 -q "$SCENARIO_FILE" 2>/dev/null || md5sum "$SCENARIO_FILE" | cut -d' ' -f1)
+fi
 if [ -f "$WORK_DIR/scenario.md5" ]; then
   PREV_SCENARIO_MD5=$(cat "$WORK_DIR/scenario.md5")
   if [ "$SCENARIO_MD5" != "$PREV_SCENARIO_MD5" ]; then
     echo "  [INVALIDATE] Scenario/edit JSON changed, clearing Step 3+ cache"
-    rm -f "$WORK_DIR/edit.json"
+    rm -f "$EDIT_OUTPUT"
+    [ "$AUTO_SCENARIO" = true ] && rm -f "$SCENARIO_OUTPUT"
     # Don't remove Step 1-2 outputs (normalized video, transcript, scenes, silences, captions)
   fi
 fi
@@ -148,7 +223,7 @@ if [ "$FROM_STEP" -gt 1 ]; then
   fi
   # Step 3 produces edit.json
   if [ "$FROM_STEP" -gt 3 ]; then
-    [ ! -f "$WORK_DIR/edit.json" ] && [ ! -f "$EDIT_JSON" ] && MISSING_FILES+=("edit.json")
+    [ ! -f "$EDIT_OUTPUT" ] && [ ! -f "${MANUAL_INPUT:-}" ] && MISSING_FILES+=("edit.json")
   fi
   # Step 4 produces output file
   if [ "$FROM_STEP" -gt 4 ]; then
@@ -171,7 +246,7 @@ TRANSCRIPT="$WORK_DIR/transcript.json"
 SCENES="$WORK_DIR/scenes.json"
 SILENCES="$WORK_DIR/silences.json"
 CAPTIONS="$WORK_DIR/captions.json"
-AI_EDIT="$WORK_DIR/edit.json"
+AI_EDIT="$EDIT_OUTPUT"
 
 # ═══════════════════════════════════════════
 # Step 1: ffmpeg Preprocessing
@@ -336,9 +411,29 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ] && [ "$FROM_STEP" -le 3 ];
   echo "==========================================="
   STEP_START=$(date +%s)
 
-  # Determine the props file for Remotion
-  # If EDIT_JSON is a scenario (not a direct edit script), generate via AI
-  # For now: if .work/edit.json exists from a previous run, or if --skip-ai, use EDIT_JSON directly
+  if [ "$AUTO_SCENARIO" = true ]; then
+    if [ "$FORCE" = true ] || [ ! -f "$SCENARIO_OUTPUT" ]; then
+      echo "  Generating scenario via AI..."
+      SCENARIO_ARGS=(
+        --output "$SCENARIO_OUTPUT"
+        --prompt-output "$PROMPT_OUTPUT"
+        --error-output "$SCENARIO_ERROR_OUTPUT"
+        --source-name "$(basename "$INPUT")"
+      )
+      [ -n "$TITLE_HINT" ] && SCENARIO_ARGS+=(--title "$TITLE_HINT")
+      [ -n "$LANGUAGE_HINT" ] && SCENARIO_ARGS+=(--language "$LANGUAGE_HINT")
+      [ -f "$TRANSCRIPT" ] && SCENARIO_ARGS+=(--transcript "$TRANSCRIPT")
+      [ -f "$SCENES" ] && SCENARIO_ARGS+=(--scenes "$SCENES")
+      [ -f "$SILENCES" ] && SCENARIO_ARGS+=(--silences "$SILENCES")
+      [ -f "$NORMALIZED" ] && SCENARIO_ARGS+=(--video "$NORMALIZED")
+
+      python3 "$SCRIPTS_DIR/generate_scenario.py" --engine cli "${SCENARIO_ARGS[@]}"
+      echo "  [OK] AI scenario: $SCENARIO_OUTPUT"
+    else
+      echo "  [CACHE] AI-generated scenario exists: $SCENARIO_OUTPUT"
+    fi
+  fi
+
   if [ -f "$AI_EDIT" ] && [ "$FORCE" = false ]; then
     echo "  [CACHE] AI-generated edit.json exists: $AI_EDIT"
     echo "  Using cached AI edit script"
@@ -347,7 +442,7 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ] && [ "$FROM_STEP" -le 3 ];
   else
     echo "  Generating edit script via AI..."
     GENERATE_ARGS=(
-      --scenario "$EDIT_JSON"
+      --scenario "$SCENARIO_FILE"
       --output "$AI_EDIT"
     )
     [ -f "$TRANSCRIPT" ] && GENERATE_ARGS+=(--transcript "$TRANSCRIPT")
@@ -364,15 +459,20 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ] && [ "$FROM_STEP" -le 3 ];
   STEP_ELAPSED[2]=$(($(date +%s) - STEP_START))
   echo "  Elapsed: $(step_timer $STEP_START)"
 else
-  # Skip AI: use the provided EDIT_JSON directly as props
-  PROPS_FILE="$EDIT_JSON"
+  # Skip AI: use a cached/generated edit.json if available, otherwise fall back
+  # to the manual input path for direct edit-json workflows.
+  if [ -f "$AI_EDIT" ]; then
+    PROPS_FILE="$AI_EDIT"
+  else
+    PROPS_FILE="$MANUAL_INPUT"
+  fi
 
   if [ "$EDIT_ONLY" = false ]; then
     echo ""
     echo "==========================================="
     echo " Step 3: AI Edit Script Generation [SKIPPED]"
     echo "==========================================="
-    echo "  Using provided edit JSON: $EDIT_JSON"
+    echo "  Using provided edit JSON: $PROPS_FILE"
   fi
 fi
 

@@ -32,12 +32,14 @@ export interface ScenarioForm {
   options: ScenarioOptions;
 }
 
+export type InputMode = 'manual' | 'auto';
 export type JobStatus = 'queued' | 'running' | 'done' | 'failed';
 
 export interface JobSummary {
   id: string;
   title: string;
   status: JobStatus;
+  inputMode: InputMode;
   createdAt: string;
   completedAt: string | null;
   duration: number | null;
@@ -48,6 +50,7 @@ export interface Job {
   id: string;
   title: string;
   status: JobStatus;
+  inputMode: InputMode;
   currentStep: number;
   createdAt: string;
   startedAt: string | null;
@@ -58,5 +61,8 @@ export interface Job {
   hasVideo: boolean;
   hasThumbnail: boolean;
   hasEdit: boolean;
+  hasScenario?: boolean;
+  titleHint?: string | null;
+  languageHint?: string | null;
   scenario?: ScenarioForm;
 }

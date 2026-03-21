@@ -2,13 +2,35 @@ import type { Job, JobSummary } from '../types/scenario';
 
 const API_URL = 'http://localhost:8010';
 
+export type CreateJobRequest =
+  | {
+      mode: 'manual';
+      scenario: object;
+    }
+  | {
+      mode: 'auto';
+      title?: string;
+      language?: string;
+    };
+
 export async function createJob(
   video: File,
-  scenario: object,
+  request: CreateJobRequest,
 ): Promise<{ id: string }> {
   const formData = new FormData();
   formData.append('video', video);
-  formData.append('scenario', JSON.stringify(scenario));
+
+  if (request.mode === 'manual') {
+    formData.append('scenario', JSON.stringify(request.scenario));
+  } else {
+    formData.append('autoScenario', 'true');
+    if (request.title?.trim()) {
+      formData.append('title', request.title.trim());
+    }
+    if (request.language?.trim()) {
+      formData.append('language', request.language.trim());
+    }
+  }
 
   const res = await fetch(`${API_URL}/api/jobs`, {
     method: 'POST',

@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createJob } from '../api/client';
-import type { ScenarioForm, ScenarioSection } from '../types/scenario';
+import type { InputMode, ScenarioForm, ScenarioSection } from '../types/scenario';
 
 const ACCEPTED_TYPES = '.mp4,.mov,.webm';
 const ACCEPTED_MIME = ['video/mp4', 'video/quicktime', 'video/webm'];
@@ -29,6 +29,7 @@ export function UploadPage(): React.JSX.Element {
   const [isDragging, setIsDragging] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [mode, setMode] = useState<InputMode>('auto');
 
   const [form, setForm] = useState<ScenarioForm>({
       title: '',
@@ -129,20 +130,41 @@ export function UploadPage(): React.JSX.Element {
     }));
   }, []);
 
-  const canSubmit = file !== null && form.title.trim().length > 0 && !isSubmitting;
+  const hasValidManualSections = form.sections.every(
+    (section) =>
+      section.title.trim().length > 0 &&
+      section.description.trim().length > 0 &&
+      section.timeRange.endSec > section.timeRange.startSec,
+  );
+  const canSubmit =
+    file !== null &&
+    !isSubmitting &&
+    (mode === 'auto' || (form.title.trim().length > 0 && hasValidManualSections));
 
   const handleSubmit = useCallback(async () => {
     if (!file || !canSubmit) return;
 
     setIsSubmitting(true);
     try {
-      const result = await createJob(file, form);
+      const result = await createJob(
+        file,
+        mode === 'auto'
+          ? {
+              mode: 'auto',
+              title: form.title,
+              language: form.language === 'auto' ? undefined : form.language,
+            }
+          : {
+              mode: 'manual',
+              scenario: form,
+            },
+      );
       navigate(`/jobs/${result.id}`);
     } catch (err) {
       console.error('Failed to create job:', err);
       setIsSubmitting(false);
     }
-  }, [file, form, canSubmit, navigate]);
+  }, [file, form, mode, canSubmit, navigate]);
 
   return (
     <div className="space-y-6">
@@ -234,7 +256,38 @@ export function UploadPage(): React.JSX.Element {
 
       {/* Scenario Form */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-        <h2 className="text-lg font-medium text-gray-800 mb-4">Scenario</h2>
+        <h2 className="text-lg font-medium text-gray-800 mb-4">Input Mode</h2>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-6">
+          <button
+            type="button"
+            onClick={() => setMode('auto')}
+            className={`rounded-xl border px-4 py-4 text-left transition-colors ${
+              mode === 'auto'
+                ? 'border-[#c8102e] bg-red-50'
+                : 'border-gray-200 bg-white hover:border-gray-300'
+            }`}
+          >
+            <p className="text-sm font-semibold text-gray-800">AI-assisted</p>
+            <p className="mt-1 text-sm text-gray-500">
+              Upload only the video, then let AI derive the scenario from analysis.
+            </p>
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode('manual')}
+            className={`rounded-xl border px-4 py-4 text-left transition-colors ${
+              mode === 'manual'
+                ? 'border-[#c8102e] bg-red-50'
+                : 'border-gray-200 bg-white hover:border-gray-300'
+            }`}
+          >
+            <p className="text-sm font-semibold text-gray-800">Manual scenario</p>
+            <p className="mt-1 text-sm text-gray-500">
+              Define sections yourself for full control over titles, descriptions, and ranges.
+            </p>
+          </button>
+        </div>
 
         <div className="space-y-4">
           {/* Title */}
@@ -243,7 +296,13 @@ export function UploadPage(): React.JSX.Element {
               htmlFor="scenario-title"
               className="block text-sm font-medium text-gray-700 mb-1"
             >
-              Title <span className="text-red-500">*</span>
+              {mode === 'manual' ? (
+                <>
+                  Title <span className="text-red-500">*</span>
+                </>
+              ) : (
+                'Title Hint'
+              )}
             </label>
             <input
               id="scenario-title"
@@ -252,14 +311,14 @@ export function UploadPage(): React.JSX.Element {
               onChange={(e) =>
                 setForm((prev) => ({ ...prev, title: e.target.value }))
               }
-              placeholder="Enter video title"
+              placeholder={mode === 'auto' ? 'Optional title for AI guidance' : 'Enter video title'}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Subtitle */}
-            <div>
+            <div className={mode === 'auto' ? 'hidden' : ''}>
               <label
                 htmlFor="scenario-subtitle"
                 className="block text-sm font-medium text-gray-700 mb-1"
@@ -277,12 +336,12 @@ export function UploadPage(): React.JSX.Element {
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
             </div>
-            <div>
+            <div className={mode === 'auto' ? 'md:col-span-2' : ''}>
               <label
                 htmlFor="scenario-language"
                 className="block text-sm font-medium text-gray-700 mb-1"
               >
-                Language
+                {mode === 'auto' ? 'Language Hint' : 'Language'}
               </label>
               <select
                 id="scenario-language"
@@ -301,6 +360,7 @@ export function UploadPage(): React.JSX.Element {
           </div>
 
           {/* Sections */}
+          {mode === 'manual' ? (
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className="block text-sm font-medium text-gray-700">
@@ -414,8 +474,15 @@ export function UploadPage(): React.JSX.Element {
               ))}
             </div>
           </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-5 text-sm text-gray-600">
+              AI-assisted mode will infer section titles, descriptions, and time ranges from transcript, scene, and silence analysis.
+              Language and title above are optional hints only.
+            </div>
+          )}
 
           {/* Advanced Options (Collapsible) */}
+          {mode === 'manual' && (
           <div className="border border-gray-200 rounded-lg">
             <button
               type="button"
@@ -561,6 +628,7 @@ export function UploadPage(): React.JSX.Element {
               </div>
             )}
           </div>
+          )}
         </div>
       </div>
 
@@ -609,9 +677,14 @@ export function UploadPage(): React.JSX.Element {
             Upload a video file to enable generation
           </p>
         )}
-        {file && form.title.trim().length === 0 && (
+        {file && mode === 'manual' && form.title.trim().length === 0 && (
           <p className="text-xs text-gray-400 text-center mt-2">
             Enter a title to enable generation
+          </p>
+        )}
+        {file && mode === 'manual' && !hasValidManualSections && (
+          <p className="text-xs text-gray-400 text-center mt-2">
+            Fill each section title, description, and valid time range to enable generation
           </p>
         )}
       </div>
