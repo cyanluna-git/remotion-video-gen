@@ -1,0 +1,54 @@
+{
+  "version": "1.0",
+  "fps": 30,
+  "resolution": { "width": 1920, "height": 1080 },
+  "sources": {
+    "main": "recordings/test-10s.mp4"
+  },
+  "timeline": [
+    {
+      "type": "title-card",
+      "text": "Test Video",
+      "subtitle": "Phase 1 E2E Verification",
+      "durationSec": 3,
+      "background": "linear-gradient(135deg, #c8102e, #1e1b4b)"
+    },
+    {
+      "type": "clip",
+      "source": "main",
+      "startSec": 0,
+      "endSec": 5,
+      "overlays": [
+        {
+          "type": "caption",
+          "text": "First segment — introduction",
+          "startSec": 1,
+          "durationSec": 3,
+          "position": "bottom"
+        }
+      ]
+    },
+    {
+      "type": "clip",
+      "source": "main",
+      "startSec": 5,
+      "endSec": 10,
+      "overlays": [
+        {
+          "type": "caption",
+          "text": "Second segment — demo",
+          "startSec": 0.5,
+          "durationSec": 3,
+          "position": "bottom"
+        },
+        {
+          "type": "highlight",
+          "startSec": 1,
+          "durationSec": 2,
+          "region": { "x": 400, "y": 300, "width": 500, "height": 60 },
+          "color": "rgba(200, 16, 46, 0.25)"
+        }
+      ]
+    }
+  ]
+}
