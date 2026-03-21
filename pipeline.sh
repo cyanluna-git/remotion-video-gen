@@ -355,7 +355,7 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ] && [ "$FROM_STEP" -le 3 ];
     [ -f "$SILENCES" ] && GENERATE_ARGS+=(--silences "$SILENCES")
     [ -f "$NORMALIZED" ] && GENERATE_ARGS+=(--video "$NORMALIZED")
 
-    python3 "$SCRIPTS_DIR/generate_edit.py" "${GENERATE_ARGS[@]}"
+    python3 "$SCRIPTS_DIR/generate_edit.py" --engine cli "${GENERATE_ARGS[@]}"
     echo "  [OK] AI edit script: $AI_EDIT"
     PROPS_FILE="$AI_EDIT"
     STEP_STATUS[2]="RAN"
@@ -392,6 +392,8 @@ if [ "$FROM_STEP" -le 4 ]; then
 
   if [ -f "$NORMALIZED" ]; then
     cp "$NORMALIZED" "$REMOTION_DIR/public/recordings/$RECORDING_NAME"
+    # Also copy as normalized.mp4 (AI-generated edit.json may reference this name)
+    cp "$NORMALIZED" "$REMOTION_DIR/public/recordings/normalized.mp4"
     echo "  Copied recording -> remotion/public/recordings/$RECORDING_NAME"
   fi
 

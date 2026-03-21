@@ -1,8 +1,12 @@
-"""Claude API edit.json generator for Remotion video pipeline.
+"""Claude edit.json generator for Remotion video pipeline.
 
 Takes a scenario file plus optional analysis data (transcript, scenes,
-silences, video) and calls the Claude API to generate a structured
-Remotion edit script in JSON format.
+silences, video) and calls Claude to generate a structured Remotion
+edit script in JSON format.
+
+Supports two engines:
+  --engine cli   (default) Uses `claude -p` CLI — no API key needed
+  --engine api   Uses Anthropic SDK — requires ANTHROPIC_API_KEY
 
 Usage:
     python scripts/generate_edit.py \\
@@ -28,7 +32,7 @@ from typing import Optional
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Generate a Remotion edit.json via Claude API from scenario + analysis data.",
+        description="Generate a Remotion edit.json via Claude from scenario + analysis data.",
     )
     parser.add_argument(
         "--scenario",
@@ -65,6 +69,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         required=True,
         help="Output edit.json path",
+    )
+    parser.add_argument(
+        "--engine",
+        choices=["cli", "api"],
+        default="cli",
+        help="Engine: 'cli' uses claude -p (default), 'api' uses Anthropic SDK",
     )
     return parser.parse_args(argv)
 
@@ -131,24 +141,21 @@ def extract_transcript_segments(transcript: dict | list | None, limit: int = 100
     return result
 
 
-def build_system_prompt() -> str:
-    """Build the system prompt for Claude."""
-    return (
-        "You are a professional video editor. Generate a Remotion edit script in JSON format.\n"
-        "The JSON must conform to the EditScript schema exactly.\n"
-        "Return ONLY valid JSON \u2014 no explanations, no markdown fencing."
-    )
-
-
-def build_user_prompt(
+def build_prompt(
     scenario: dict,
     transcript_segments: list[dict],
     scenes: list | None,
     silences: list | None,
     video_duration: float | None,
 ) -> str:
-    """Construct the user message from all available inputs."""
+    """Construct the full prompt from all available inputs."""
     parts: list[str] = []
+
+    parts.append(
+        "You are a professional video editor. Generate a Remotion edit script in JSON format.\n"
+        "The JSON must conform to the EditScript schema exactly.\n"
+        "Return ONLY valid JSON — no explanations, no markdown fencing, no comments.\n"
+    )
 
     parts.append("## Scenario\n")
     parts.append(json.dumps(scenario, indent=2, ensure_ascii=False))
@@ -175,17 +182,22 @@ def build_user_prompt(
     parts.append("- Arrange clips according to each scenario section's timeRange (startSec, endSec).")
     parts.append(f"- Remove silence segments longer than {silence_threshold} seconds.")
     parts.append("- Insert a title-card entry between sections using the section's title.")
-    parts.append("- Place caption overlays from the Whisper transcript at their correct timestamps.")
-    parts.append('- Correct Whisper transcript errors for technical terms (e.g. "\ubaa8\ub4dc\ubc84\uc2a4"\u2192"Modbus").')
+    parts.append("- Place caption overlays from the Whisper transcript at their correct timestamps within the clip.")
+    parts.append('- Correct Whisper transcript errors for technical terms (e.g. "모드버스"→"Modbus").')
 
     transition = style.get("transition", "fade")
+    transition_dur = style.get("transitionDuration", 0.5)
     caption_pos = style.get("captionPosition", "bottom")
     title_bg = style.get("titleCardBackground", "linear-gradient(135deg, #c8102e, #1e1b4b)")
-    parts.append(f'- Use transition type: "{transition}".')
+    parts.append(f'- Use transition type: "{transition}" with durationSec: {transition_dur}.')
     parts.append(f'- Caption position: "{caption_pos}".')
     parts.append(f'- Title card background: "{title_bg}".')
     parts.append('- Use "main" as the source key for all video clips.')
-    parts.append("- The output JSON must include: version, fps, resolution, sources, timeline.")
+    parts.append("- sources should be: { \"main\": \"recordings/normalized.mp4\" }")
+    parts.append("- The output JSON must include: version (\"1.0\"), fps (30), resolution ({width:1920,height:1080}), sources, timeline.")
+    parts.append("- Each title-card must have: type, text, durationSec, background.")
+    parts.append("- Each clip must have: type, source, startSec, endSec. Optionally: overlays, transition.")
+    parts.append("- Each overlay must have: type, startSec, durationSec. For caption: text, position. For highlight: region, color.")
 
     return "\n".join(parts)
 
@@ -194,11 +206,13 @@ def extract_json_from_response(text: str) -> dict:
     """Parse JSON from Claude's response, handling markdown fencing."""
     stripped = text.strip()
 
+    # Direct parse
     try:
         return json.loads(stripped)
     except json.JSONDecodeError:
         pass
 
+    # Try markdown fenced block
     pattern = r"```(?:json)?\s*\n?(.*?)\n?\s*```"
     match = re.search(pattern, stripped, re.DOTALL)
     if match:
@@ -207,6 +221,7 @@ def extract_json_from_response(text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
+    # Try finding bare JSON object
     json_pattern = r"\{[\s\S]*\}"
     match = re.search(json_pattern, stripped)
     if match:
@@ -226,8 +241,56 @@ def validate_edit_script(edit: dict) -> None:
         raise ValueError(f"Edit script missing required fields: {', '.join(missing)}")
 
 
-def call_claude_api(system_prompt: str, user_prompt: str, retry: bool = True) -> dict:
-    """Call Claude API and return parsed edit script JSON."""
+# ═══════════════════════════════════════════
+# Engine: CLI (claude -p)
+# ═══════════════════════════════════════════
+
+def call_claude_cli(prompt: str, retry: bool = True) -> dict:
+    """Call Claude via `claude -p` CLI and return parsed edit script JSON."""
+    print("Calling Claude CLI (claude -p)...")
+
+    cmd = ["claude", "-p", prompt]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except FileNotFoundError:
+        print("ERROR: 'claude' CLI not found. Is Claude Code installed?", file=sys.stderr)
+        sys.exit(1)
+    except subprocess.TimeoutExpired:
+        print("ERROR: Claude CLI timed out after 120s.", file=sys.stderr)
+        sys.exit(1)
+
+    if result.returncode != 0:
+        print(f"ERROR: Claude CLI exited with code {result.returncode}", file=sys.stderr)
+        if result.stderr:
+            print(f"  stderr: {result.stderr[:500]}", file=sys.stderr)
+        sys.exit(1)
+
+    response_text = result.stdout
+    print(f"  Response received ({len(response_text)} chars)")
+
+    try:
+        edit = extract_json_from_response(response_text)
+        validate_edit_script(edit)
+        return edit
+    except (ValueError, json.JSONDecodeError) as exc:
+        if retry:
+            print(f"  Warning: First attempt failed ({exc}), retrying...")
+            retry_prompt = prompt + "\n\nIMPORTANT: Return ONLY valid JSON. No text before or after."
+            return call_claude_cli(retry_prompt, retry=False)
+        raise ValueError(f"Failed to get valid JSON from Claude CLI after retry: {exc}") from exc
+
+
+# ═══════════════════════════════════════════
+# Engine: API (Anthropic SDK)
+# ═══════════════════════════════════════════
+
+def call_claude_api(prompt: str, retry: bool = True) -> dict:
+    """Call Claude API via Anthropic SDK and return parsed edit script JSON."""
     try:
         import anthropic
     except ImportError:
@@ -249,8 +312,7 @@ def call_claude_api(system_prompt: str, user_prompt: str, retry: bool = True) ->
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=8000,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
+            messages=[{"role": "user", "content": prompt}],
         )
     except Exception as exc:
         print(f"ERROR: Claude API call failed: {exc}", file=sys.stderr)
@@ -266,8 +328,8 @@ def call_claude_api(system_prompt: str, user_prompt: str, retry: bool = True) ->
     except (ValueError, json.JSONDecodeError) as exc:
         if retry:
             print(f"  Warning: First attempt failed ({exc}), retrying...")
-            retry_prompt = user_prompt + "\n\nPlease return ONLY valid JSON."
-            return call_claude_api(system_prompt, retry_prompt, retry=False)
+            retry_prompt = prompt + "\n\nIMPORTANT: Return ONLY valid JSON. No text before or after."
+            return call_claude_api(retry_prompt, retry=False)
         raise ValueError(f"Failed to get valid JSON from Claude after retry: {exc}") from exc
 
 
@@ -277,13 +339,16 @@ def _get_api_key() -> str | None:
 
     try:
         from dotenv import load_dotenv
-
         load_dotenv()
     except ImportError:
         pass
 
     return os.environ.get("ANTHROPIC_API_KEY")
 
+
+# ═══════════════════════════════════════════
+# Common
+# ═══════════════════════════════════════════
 
 def save_edit_script(edit: dict, output_path: Path) -> None:
     """Save edit script as JSON."""
@@ -301,10 +366,10 @@ def print_summary(edit: dict) -> None:
 
     total_duration = 0.0
     for entry in timeline:
-        start = entry.get("startSec", 0.0)
-        end = entry.get("endSec", 0.0)
-        duration = entry.get("durationSec", end - start)
-        total_duration += duration
+        if entry.get("type") == "clip":
+            total_duration += entry.get("endSec", 0) - entry.get("startSec", 0)
+        else:
+            total_duration += entry.get("durationSec", 0)
 
     minutes = int(total_duration // 60)
     seconds = total_duration % 60
@@ -328,6 +393,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     print(f"Generating edit script from scenario: {args.scenario}")
+    print(f"Engine: {args.engine}")
     print("Loading inputs:")
 
     scenario = load_json_file(args.scenario, "scenario")
@@ -343,8 +409,7 @@ def main(argv: list[str] | None = None) -> None:
 
     transcript_segments = extract_transcript_segments(transcript)
 
-    system_prompt = build_system_prompt()
-    user_prompt = build_user_prompt(
+    prompt = build_prompt(
         scenario=scenario,
         transcript_segments=transcript_segments,
         scenes=scenes if isinstance(scenes, list) else None,
@@ -352,11 +417,16 @@ def main(argv: list[str] | None = None) -> None:
         video_duration=video_duration,
     )
 
-    edit = call_claude_api(system_prompt, user_prompt)
+    if args.engine == "cli":
+        edit = call_claude_cli(prompt)
+    else:
+        edit = call_claude_api(prompt)
 
+    # Set sources.main to recordings path for Remotion
     sources = edit.get("sources", {})
-    if args.video and "main" in sources:
-        sources["main"] = str(args.video)
+    if "main" not in sources:
+        sources["main"] = "recordings/normalized.mp4"
+    edit["sources"] = sources
 
     save_edit_script(edit, args.output)
     print(f"Saved edit script to: {args.output}")
