@@ -57,7 +57,7 @@ The scenario tells the AI **what** you want the video to show and **where** in t
 | `title` | `string` | Yes | Video title displayed on the opening title card |
 | `subtitle` | `string` | No | Subtitle shown below the title |
 | `author` | `string` | No | Author name (displayed on title card if provided) |
-| `language` | `string` | Yes | Primary language code (`ko`, `en`, etc.). Guides Whisper and Claude |
+| `language` | `string` | Yes | Primary language code (`ko`, `en`, etc.) or `"auto"` for detection. Guides Whisper and Claude |
 | `sections` | `Section[]` | Yes | Ordered list of content sections (min 1) |
 | `style` | `Style` | No | Visual customization. Defaults applied if omitted |
 | `options` | `Options` | No | Processing behavior flags. Defaults applied if omitted |
@@ -86,6 +86,21 @@ Each section maps to a segment of the source recording and becomes a titled chap
 | `timeRange.startSec` | `number` | Yes | Start time in the source recording (seconds) |
 | `timeRange.endSec` | `number` | Yes | End time in the source recording (seconds) |
 | `emphasis` | `Emphasis[]` | No | Specific moments to highlight or caption |
+
+### Legacy Compatibility
+
+During migration, legacy payloads with flat timing fields are still accepted at ingestion time:
+
+```jsonc
+{
+  "title": "Legacy Section",
+  "description": "Old frontend payload shape",
+  "startSec": 0,
+  "endSec": 30
+}
+```
+
+They are normalized to the canonical `timeRange` shape before they are saved or passed deeper into the pipeline. New writes should always emit `timeRange`.
 
 ### Emphasis
 
@@ -158,7 +173,7 @@ Controls pipeline processing behavior.
 ### Required (must be present)
 
 - `title`
-- `language`
+- `language` (`"auto"` is allowed when the caller wants Whisper to detect the language)
 - `sections` (at least one section)
   - `sections[].title`
   - `sections[].description`
@@ -240,7 +255,7 @@ The simplest valid scenario is:
 ```json
 {
   "title": "My Video",
-  "language": "en",
+  "language": "auto",
   "sections": [
     {
       "title": "Full Recording",

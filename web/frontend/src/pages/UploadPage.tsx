@@ -7,7 +7,11 @@ const ACCEPTED_TYPES = '.mp4,.mov,.webm';
 const ACCEPTED_MIME = ['video/mp4', 'video/quicktime', 'video/webm'];
 
 function createEmptySection(): ScenarioSection {
-  return { title: '', description: '', startSec: 0, endSec: 0 };
+  return {
+    title: '',
+    description: '',
+    timeRange: { startSec: 0, endSec: 0 },
+  };
 }
 
 function formatFileSize(bytes: number): string {
@@ -27,18 +31,20 @@ export function UploadPage(): React.JSX.Element {
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const [form, setForm] = useState<ScenarioForm>({
-    title: '',
-    subtitle: '',
-    sections: [createEmptySection()],
-    style: {
-      transition: 'fade',
-      captionPosition: 'bottom',
-    },
-    options: {
-      removeSilence: true,
-      autoCaption: true,
-    },
-  });
+      title: '',
+      subtitle: '',
+      language: 'auto',
+      sections: [createEmptySection()],
+      style: {
+        transition: 'fade',
+        captionPosition: 'bottom',
+      },
+      options: {
+        removeSilence: true,
+        autoCaption: true,
+        correctCaptions: true,
+      },
+    });
 
   const handleFile = useCallback((selectedFile: File) => {
     if (!ACCEPTED_MIME.includes(selectedFile.type)) {
@@ -85,10 +91,24 @@ export function UploadPage(): React.JSX.Element {
   );
 
   const updateSection = useCallback(
-    (index: number, field: keyof ScenarioSection, value: string | number) => {
+    (
+      index: number,
+      field: 'title' | 'description' | 'startSec' | 'endSec',
+      value: string | number,
+    ) => {
       setForm((prev) => {
         const sections = [...prev.sections];
-        sections[index] = { ...sections[index], [field]: value };
+        if (field === 'startSec' || field === 'endSec') {
+          sections[index] = {
+            ...sections[index],
+            timeRange: {
+              ...sections[index].timeRange,
+              [field]: Number(value),
+            },
+          };
+        } else {
+          sections[index] = { ...sections[index], [field]: value };
+        }
         return { ...prev, sections };
       });
     },
@@ -237,24 +257,47 @@ export function UploadPage(): React.JSX.Element {
             />
           </div>
 
-          {/* Subtitle */}
-          <div>
-            <label
-              htmlFor="scenario-subtitle"
-              className="block text-sm font-medium text-gray-700 mb-1"
-            >
-              Subtitle
-            </label>
-            <input
-              id="scenario-subtitle"
-              type="text"
-              value={form.subtitle}
-              onChange={(e) =>
-                setForm((prev) => ({ ...prev, subtitle: e.target.value }))
-              }
-              placeholder="Enter subtitle (optional)"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Subtitle */}
+            <div>
+              <label
+                htmlFor="scenario-subtitle"
+                className="block text-sm font-medium text-gray-700 mb-1"
+              >
+                Subtitle
+              </label>
+              <input
+                id="scenario-subtitle"
+                type="text"
+                value={form.subtitle}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, subtitle: e.target.value }))
+                }
+                placeholder="Enter subtitle (optional)"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="scenario-language"
+                className="block text-sm font-medium text-gray-700 mb-1"
+              >
+                Language
+              </label>
+              <select
+                id="scenario-language"
+                value={form.language}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, language: e.target.value }))
+                }
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
+              >
+                <option value="auto">Auto Detect</option>
+                <option value="ko">Korean</option>
+                <option value="en">English</option>
+                <option value="ja">Japanese</option>
+              </select>
+            </div>
           </div>
 
           {/* Sections */}
@@ -341,13 +384,9 @@ export function UploadPage(): React.JSX.Element {
                         id={`section-start-${index}`}
                         type="number"
                         min={0}
-                        value={section.startSec}
+                        value={section.timeRange.startSec}
                         onChange={(e) =>
-                          updateSection(
-                            index,
-                            'startSec',
-                            Number(e.target.value),
-                          )
+                          updateSection(index, 'startSec', Number(e.target.value))
                         }
                         className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       />
@@ -363,13 +402,9 @@ export function UploadPage(): React.JSX.Element {
                         id={`section-end-${index}`}
                         type="number"
                         min={0}
-                        value={section.endSec}
+                        value={section.timeRange.endSec}
                         onChange={(e) =>
-                          updateSection(
-                            index,
-                            'endSec',
-                            Number(e.target.value),
-                          )
+                          updateSection(index, 'endSec', Number(e.target.value))
                         }
                         className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       />
@@ -420,7 +455,10 @@ export function UploadPage(): React.JSX.Element {
                       onChange={(e) =>
                         setForm((prev) => ({
                           ...prev,
-                          style: { ...prev.style, transition: e.target.value },
+                          style: {
+                            ...prev.style,
+                            transition: e.target.value as ScenarioForm['style']['transition'],
+                          },
                         }))
                       }
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
@@ -446,7 +484,8 @@ export function UploadPage(): React.JSX.Element {
                           ...prev,
                           style: {
                             ...prev.style,
-                            captionPosition: e.target.value,
+                            captionPosition:
+                              e.target.value as ScenarioForm['style']['captionPosition'],
                           },
                         }))
                       }
@@ -497,6 +536,25 @@ export function UploadPage(): React.JSX.Element {
                     />
                     <span className="text-sm text-gray-700">
                       Auto captions
+                    </span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.options.correctCaptions}
+                      onChange={(e) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          options: {
+                            ...prev.options,
+                            correctCaptions: e.target.checked,
+                          },
+                        }))
+                      }
+                      className="w-4 h-4 rounded border-gray-300 text-[#c8102e] focus:ring-[#c8102e]"
+                    />
+                    <span className="text-sm text-gray-700">
+                      Correct captions with AI
                     </span>
                   </label>
                 </div>

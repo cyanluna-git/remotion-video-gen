@@ -4,6 +4,7 @@ import asyncio
 import json
 import shutil
 import subprocess
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,9 @@ from fastapi.responses import FileResponse, JSONResponse
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 JOBS_DIR = PROJECT_ROOT / "jobs"
 PIPELINE_SH = PROJECT_ROOT / "pipeline.sh"
+
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+from scenario_contract import ScenarioContractError, normalize_scenario
 
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -214,6 +218,11 @@ async def create_job(
     except json.JSONDecodeError as exc:
         shutil.rmtree(job_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail=f"Invalid scenario JSON: {exc}")
+    try:
+        scenario_data = normalize_scenario(scenario_data)
+    except ScenarioContractError as exc:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=str(exc))
 
     scenario_path = job_dir / "scenario.json"
     with scenario_path.open("w", encoding="utf-8") as f:

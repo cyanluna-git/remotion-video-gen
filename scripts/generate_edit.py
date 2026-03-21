@@ -28,6 +28,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from scenario_contract import ScenarioContractError, normalize_scenario
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments."""
@@ -159,6 +161,9 @@ def build_prompt(
 
     parts.append("## Scenario\n")
     parts.append(json.dumps(scenario, indent=2, ensure_ascii=False))
+
+    language = scenario.get("language", "auto")
+    parts.append(f"\n## Language\n{language}")
 
     if video_duration is not None:
         parts.append(f"\n## Video Duration\n{video_duration:.3f} seconds")
@@ -399,6 +404,11 @@ def main(argv: list[str] | None = None) -> None:
     scenario = load_json_file(args.scenario, "scenario")
     if scenario is None:
         print("ERROR: Failed to load scenario file.", file=sys.stderr)
+        sys.exit(1)
+    try:
+        scenario = normalize_scenario(scenario)
+    except ScenarioContractError as exc:
+        print(f"ERROR: Invalid scenario payload: {exc}", file=sys.stderr)
         sys.exit(1)
 
     transcript = load_json_file(args.transcript, "transcript") if args.transcript else None

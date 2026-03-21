@@ -1,23 +1,32 @@
-export interface ScenarioSection {
-  title: string;
-  description: string;
+export interface TimeRange {
   startSec: number;
   endSec: number;
 }
 
+export interface ScenarioSection {
+  title: string;
+  description: string;
+  timeRange: TimeRange;
+}
+
 export interface ScenarioStyle {
-  transition: string;
-  captionPosition: string;
+  titleCardBackground?: string;
+  transition: 'fade' | 'slide-left' | 'slide-right' | 'wipe' | 'none';
+  transitionDuration?: number;
+  captionPosition: 'top' | 'bottom' | 'center';
 }
 
 export interface ScenarioOptions {
   removeSilence: boolean;
+  silenceThreshold?: number;
   autoCaption: boolean;
+  correctCaptions: boolean;
 }
 
 export interface ScenarioForm {
   title: string;
   subtitle: string;
+  language: string;
   sections: ScenarioSection[];
   style: ScenarioStyle;
   options: ScenarioOptions;
