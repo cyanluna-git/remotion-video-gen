@@ -1,0 +1,127 @@
+# CLAUDE.md — Remotion Video Gen
+
+> **Created**: 2026-03-21 (Fri)
+
+## Project Overview
+
+스크린 녹화 영상 + 시나리오 스크립트를 입력받아, AI 분석/보정을 거쳐 Remotion으로 최종 편집 영상을 자동 생성하는 파이프라인.
+
+### Core Mission
+- 녹화 MP4 + 시나리오 JSON → 편집된 최종 MP4 (1 command)
+- AI가 자막 생성, 묵음/씬 감지, 편집 스크립트 자동 생성
+- 시나리오 변경 시 재렌더링만으로 영상 재생성
+
+## Project Structure
+
+```
+remotion-video-gen/
+├── PLAN.md                  # 계획 문서
+├── CLAUDE.md                # 이 파일
+├── pipeline.sh              # 메인 파이프라인 (bash)
+├── remotion/                # Remotion React 프로젝트
+│   ├── src/
+│   │   ├── index.ts
+│   │   ├── Root.tsx
+│   │   ├── ScriptDrivenVideo.tsx
+│   │   ├── components/
+│   │   └── types/
+│   ├── public/recordings/   # 원본 녹화 (.gitignore)
+│   ├── remotion.config.ts
+│   └── package.json
+├── scripts/                 # Python 분석 스크립트
+│   ├── transcribe.py
+│   ├── detect_scenes.py
+│   ├── detect_silence.py
+│   ├── generate_edit.py
+│   └── convert_captions.py
+├── scenarios/               # 시나리오 JSON/MD
+├── output/                  # 최종 출력 (.gitignore)
+├── .work/                   # 중간 파일 (.gitignore)
+└── requirements.txt
+```
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Video Framework | Remotion 4.x (React + TypeScript) |
+| Video Processing | ffmpeg (libx264) |
+| Speech-to-Text | Whisper (openai-whisper, medium/large model) |
+| AI Edit/Caption | Claude API (anthropic SDK) |
+| Scripts | Python 3.12+ (type hints, Black) |
+| Pipeline | Bash |
+| Package Manager | npm (Remotion), pip (Python) |
+
+## Code Conventions
+
+### TypeScript (Remotion)
+- strict mode, no `any`
+- Functional components only
+- Props: explicit interface
+- Naming: PascalCase (components), camelCase (functions), UPPER_SNAKE_CASE (constants)
+
+### Python (Scripts)
+- Type hints required on all functions
+- Black formatter, line length 120
+- snake_case for functions, PascalCase for classes
+
+### Bash (Pipeline)
+- `set -euo pipefail` at top
+- Functions for each pipeline step
+- Clear echo messages for progress
+
+### Git
+- Conventional Commits: `feat/fix/refactor/chore(scope): subject`
+- Scopes: `remotion`, `scripts`, `pipeline`, `docs`
+- Include Co-Authored-By header
+
+## Key Design Decisions
+
+### Edit Script JSON이 중심
+- 모든 편집 결정은 `edit.json`에 기록
+- Remotion은 이 JSON을 해석하여 영상을 합성
+- AI는 이 JSON을 생성/수정
+- 사람이 수동으로 JSON을 편집하여 미세조정 가능
+
+### 파이프라인 단계 독립성
+- 각 단계는 독립 실행 가능 (전체 파이프라인 불필요)
+- 중간 결과물은 `.work/`에 저장하여 재사용
+- 실패 시 해당 단계만 재실행
+
+### OffthreadVideo 사용
+- 장시간 스크린 녹화에 `<OffthreadVideo>` 필수
+- `<Video>` 는 메모리 이슈로 사용하지 않음
+
+## CLI Commands
+
+```bash
+# 전체 파이프라인
+./pipeline.sh input.mp4 scenario.json
+
+# Remotion 프리뷰
+cd remotion && npx remotion studio
+
+# Remotion 렌더링
+cd remotion && npx remotion render ScriptDrivenVideo output.mp4 --props=edit.json
+
+# Whisper 자막
+python scripts/transcribe.py input.mp4
+
+# 씬/묵음 감지
+python scripts/detect_scenes.py input.mp4
+python scripts/detect_silence.py input.mp4
+```
+
+## Environment Variables
+
+```bash
+# .env (gitignored)
+ANTHROPIC_API_KEY=sk-ant-...    # Claude API key for edit script generation
+```
+
+## Important Notes
+
+- `output/`, `.work/`, `remotion/public/recordings/` 는 gitignore 대상
+- MP4, WAV 등 미디어 파일은 git에 포함하지 않음
+- `ANTHROPIC_API_KEY`는 `.env`에만, 절대 커밋하지 않음
+- Remotion은 Chromium 기반 렌더링 — 첫 실행 시 Chromium 다운로드 발생
