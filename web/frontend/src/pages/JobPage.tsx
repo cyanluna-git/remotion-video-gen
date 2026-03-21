@@ -13,6 +13,7 @@ export function JobPage(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(false);
   const [scenarioOpen, setScenarioOpen] = useState(false);
+  const [qaOpen, setQaOpen] = useState(false);
   const [editJson, setEditJson] = useState<Record<string, unknown> | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [rerendering, setRerendering] = useState(false);
@@ -153,6 +154,17 @@ export function JobPage(): React.JSX.Element {
                   Narration assets detected
                 </span>
               )}
+              {job.hasQa && (
+                <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${
+                  job.qaStatus === 'pass'
+                    ? 'bg-emerald-50 text-emerald-700'
+                    : job.qaStatus === 'fail'
+                      ? 'bg-red-50 text-red-700'
+                      : 'bg-amber-50 text-amber-700'
+                }`}>
+                  QA {job.qaStatus ?? 'unknown'}
+                </span>
+              )}
             </div>
           </div>
           <StatusBadge status={job.status} />
@@ -213,6 +225,35 @@ export function JobPage(): React.JSX.Element {
             <p className="mt-1 text-sm text-gray-500">
               {job.voiceoverArtifacts.join(', ')}
             </p>
+          </div>
+        )}
+
+        {job.qa && (
+          <div className="border border-gray-200 rounded-lg overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setQaOpen((prev) => !prev)}
+              className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              <span>Post-render QA</span>
+              <svg
+                className={`w-4 h-4 transition-transform ${qaOpen ? 'rotate-180' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {qaOpen && (
+              <pre
+                className="px-4 py-3 text-sm text-gray-300 font-mono whitespace-pre-wrap break-words overflow-y-auto border-t border-gray-200"
+                style={{ backgroundColor: '#1a1a2e', maxHeight: '320px' }}
+              >
+                {JSON.stringify(job.qa, null, 2)}
+              </pre>
+            )}
           </div>
         )}
 

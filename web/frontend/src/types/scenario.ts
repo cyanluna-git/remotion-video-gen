@@ -40,6 +40,9 @@ export interface JobSummary {
   title: string;
   status: JobStatus;
   inputMode: InputMode;
+  hasQa?: boolean;
+  qaStatus?: string | null;
+  qaWarningCount?: number;
   createdAt: string;
   completedAt: string | null;
   duration: number | null;
@@ -61,6 +64,10 @@ export interface Job {
   hasVideo: boolean;
   hasThumbnail: boolean;
   hasEdit: boolean;
+  hasQa?: boolean;
+  qaStatus?: string | null;
+  qaWarningCount?: number;
+  qa?: Record<string, unknown>;
   hasScenario?: boolean;
   hasVoiceover?: boolean;
   hasVoiceoverArtifacts?: boolean;

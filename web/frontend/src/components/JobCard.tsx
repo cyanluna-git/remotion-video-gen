@@ -136,6 +136,19 @@ export function JobCard({ job, onDelete }: JobCardProps): React.JSX.Element {
           <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
             {job.inputMode === 'auto' ? 'AI-assisted' : 'Manual'}
           </span>
+          {job.hasQa && (
+            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+              job.qaStatus === 'pass'
+                ? 'bg-emerald-50 text-emerald-700'
+                : job.qaStatus === 'fail'
+                  ? 'bg-red-50 text-red-700'
+                  : 'bg-amber-50 text-amber-700'
+            }`}>
+              {job.qaStatus === 'pass'
+                ? 'QA pass'
+                : `QA ${job.qaWarningCount ?? 0} issue${(job.qaWarningCount ?? 0) === 1 ? '' : 's'}`}
+            </span>
+          )}
         </div>
 
         <p className="text-xs text-gray-400">

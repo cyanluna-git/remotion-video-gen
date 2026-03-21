@@ -99,6 +99,9 @@ def job_summary(job_dir: Path) -> Optional[dict]:
         "title": meta.get("title", ""),
         "status": meta.get("status", "unknown"),
         "inputMode": meta.get("inputMode", "manual"),
+        "hasQa": meta.get("hasQa", False),
+        "qaStatus": meta.get("qaStatus"),
+        "qaWarningCount": meta.get("qaWarningCount", 0),
         "createdAt": meta.get("createdAt"),
         "completedAt": meta.get("completedAt"),
         "duration": meta.get("duration"),
@@ -118,6 +121,9 @@ async def run_pipeline(job_id: str, job_dir: Path, edit_only: bool = False) -> N
     meta = load_meta(meta_path)
     meta["status"] = "running"
     meta["startedAt"] = utcnow_iso()
+    meta["hasQa"] = False
+    meta["qaStatus"] = None
+    meta["qaWarningCount"] = 0
     save_meta(meta_path, meta)
 
     input_video = job_dir / "input.mp4"
@@ -216,24 +222,55 @@ async def run_pipeline(job_id: str, job_dir: Path, edit_only: bool = False) -> N
             except (ValueError, TypeError):
                 pass
 
-        # Generate thumbnail from first frame
+        # Generate representative thumbnail + heuristic QA review.
         thumb = output_dir / "thumbnail.jpg"
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(output),
-                "-vframes",
-                "1",
-                "-q:v",
-                "5",
-                "-vf",
-                "scale=480:-1",
-                str(thumb),
-            ],
-            capture_output=True,
-        )
+        qa_path = output_dir / "qa.json"
+        edit_path = job_dir / "edit.json"
+        review_cmd = [
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "post_render_review.py"),
+            "--video",
+            str(output),
+            "--output-json",
+            str(qa_path),
+            "--thumbnail-output",
+            str(thumb),
+        ]
+        if edit_path.exists():
+            review_cmd.extend(["--edit-json", str(edit_path)])
+
+        review_result = subprocess.run(review_cmd, capture_output=True, text=True)
+        meta["hasQa"] = review_result.returncode == 0 and qa_path.exists()
+
+        if meta["hasQa"]:
+            try:
+                with qa_path.open("r", encoding="utf-8") as f:
+                    qa_data = json.load(f)
+                summary = qa_data.get("summary", {})
+                meta["qaStatus"] = summary.get("status")
+                meta["qaWarningCount"] = summary.get("warningCount", 0)
+            except (json.JSONDecodeError, OSError):
+                meta["hasQa"] = False
+
+        if not thumb.exists():
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    str(output),
+                    "-vframes",
+                    "1",
+                    "-q:v",
+                    "5",
+                    "-vf",
+                    "scale=480:-1",
+                    str(thumb),
+                ],
+                capture_output=True,
+            )
+        meta.setdefault("qaStatus", None)
+        meta.setdefault("qaWarningCount", 0)
     else:
         meta["status"] = "failed"
 
@@ -361,6 +398,8 @@ async def get_job(job_id: str) -> dict:
 
     thumb = job_dir / "output" / "thumbnail.jpg"
     meta["hasThumbnail"] = thumb.exists()
+    qa_path = job_dir / "output" / "qa.json"
+    meta["hasQa"] = qa_path.exists()
 
     edit_path = job_dir / "output" / "edit.json"
     if not edit_path.exists():
@@ -395,6 +434,17 @@ async def get_job(job_id: str) -> dict:
         meta["voiceoverArtifacts"] = sorted(
             path.name for path in voiceover_dir.iterdir() if path.is_file()
         )
+
+    if qa_path.exists():
+        try:
+            with qa_path.open("r", encoding="utf-8") as f:
+                qa_data = json.load(f)
+            meta["qa"] = qa_data
+            summary = qa_data.get("summary", {})
+            meta["qaStatus"] = summary.get("status")
+            meta["qaWarningCount"] = summary.get("warningCount", 0)
+        except (json.JSONDecodeError, OSError):
+            meta["hasQa"] = False
 
     return meta
 
@@ -500,6 +550,9 @@ async def rerender_job(job_id: str) -> dict:
     meta["completedAt"] = None
     meta["duration"] = None
     meta["log"] = ""
+    meta["hasQa"] = False
+    meta["qaStatus"] = None
+    meta["qaWarningCount"] = 0
     save_meta(meta_path, meta)
 
     asyncio.create_task(run_pipeline(job_id, job_dir, edit_only=True))
