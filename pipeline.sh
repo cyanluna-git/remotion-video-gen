@@ -226,7 +226,7 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_ANALYSIS" = false ] && [ "$FROM_STEP" -l
   # Step 2a: Whisper transcription (background)
   if [ "$FORCE" = true ] || [ ! -f "$TRANSCRIPT" ]; then
     echo "  [2a] Whisper transcription starting..."
-    python "$SCRIPTS_DIR/transcribe.py" "$AUDIO_WAV" \
+    python3 "$SCRIPTS_DIR/transcribe.py" "$AUDIO_WAV" \
       --output "$TRANSCRIPT" \
       > "$WORK_DIR/whisper.log" 2>&1 &
     WHISPER_PID=$!
@@ -238,7 +238,7 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_ANALYSIS" = false ] && [ "$FROM_STEP" -l
   # Step 2b: Scene detection (background)
   if [ "$FORCE" = true ] || [ ! -f "$SCENES" ]; then
     echo "  [2b] Scene detection starting..."
-    python "$SCRIPTS_DIR/detect_scenes.py" "$NORMALIZED" \
+    python3 "$SCRIPTS_DIR/detect_scenes.py" "$NORMALIZED" \
       --output "$SCENES" \
       > "$WORK_DIR/scenes.log" 2>&1 &
     SCENE_PID=$!
@@ -250,7 +250,7 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_ANALYSIS" = false ] && [ "$FROM_STEP" -l
   # Step 2c: Silence detection (background)
   if [ "$FORCE" = true ] || [ ! -f "$SILENCES" ]; then
     echo "  [2c] Silence detection starting..."
-    python "$SCRIPTS_DIR/detect_silence.py" "$NORMALIZED" \
+    python3 "$SCRIPTS_DIR/detect_silence.py" "$NORMALIZED" \
       --output "$SILENCES" \
       > "$WORK_DIR/silences.log" 2>&1 &
     SILENCE_PID=$!
@@ -299,7 +299,7 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_ANALYSIS" = false ] && [ "$FROM_STEP" -l
   if [ -f "$TRANSCRIPT" ]; then
     if [ "$FORCE" = true ] || [ ! -f "$CAPTIONS" ]; then
       echo "  Converting captions from transcript..."
-      python "$SCRIPTS_DIR/convert_captions.py" "$TRANSCRIPT" \
+      python3 "$SCRIPTS_DIR/convert_captions.py" "$TRANSCRIPT" \
         --output "$CAPTIONS"
       echo "  [OK] Captions: $CAPTIONS"
       STEP2_RAN=true
@@ -355,7 +355,7 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ] && [ "$FROM_STEP" -le 3 ];
     [ -f "$SILENCES" ] && GENERATE_ARGS+=(--silences "$SILENCES")
     [ -f "$NORMALIZED" ] && GENERATE_ARGS+=(--video "$NORMALIZED")
 
-    python "$SCRIPTS_DIR/generate_edit.py" "${GENERATE_ARGS[@]}"
+    python3 "$SCRIPTS_DIR/generate_edit.py" "${GENERATE_ARGS[@]}"
     echo "  [OK] AI edit script: $AI_EDIT"
     PROPS_FILE="$AI_EDIT"
     STEP_STATUS[2]="RAN"
@@ -395,12 +395,28 @@ if [ "$FROM_STEP" -le 4 ]; then
     echo "  Copied recording -> remotion/public/recordings/$RECORDING_NAME"
   fi
 
-  echo "  Props file: ${PROPS_FILE:-$EDIT_JSON}"
+  # Wrap edit.json in {script: ...} for Remotion component props
+  EDIT_SOURCE="${PROPS_FILE:-$EDIT_JSON}"
+  WRAPPED_PROPS="$WORK_DIR/remotion-props.json"
+  python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    edit = json.load(f)
+# If already wrapped, use as-is
+if 'script' in edit and 'timeline' in edit.get('script', {}):
+    wrapped = edit
+else:
+    wrapped = {'script': edit}
+with open(sys.argv[2], 'w') as f:
+    json.dump(wrapped, f)
+" "$EDIT_SOURCE" "$WRAPPED_PROPS"
+
+  echo "  Props file: $EDIT_SOURCE -> wrapped"
   echo "  Rendering with Remotion (concurrency=$CONCURRENCY)..."
   cd "$REMOTION_DIR"
   npx remotion render ScriptDrivenVideo \
     "$OUTPUT_FILE" \
-    --props="${PROPS_FILE:-$EDIT_JSON}" \
+    --props="$WRAPPED_PROPS" \
     --concurrency="$CONCURRENCY" \
     2>&1 | tail -5
 

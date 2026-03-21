@@ -67,9 +67,8 @@ def detect_scenes(
         )
         sys.exit(1)
 
-    video = open_video(str(input_path))
     raw_scenes = detect(
-        video,
+        str(input_path),
         AdaptiveDetector(
             adaptive_threshold=threshold,
             min_scene_len=min_scene_len,
