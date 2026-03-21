@@ -199,6 +199,49 @@ class BackendApiE2ETest(unittest.TestCase):
         self.assertEqual(payload["ttsModel"], "demo-v1")
         self.assertEqual(payload["ttsVoice"], "alloy")
 
+    def test_artifact_retrieval_surfaces_qa_review_methods(self) -> None:
+        response = self.client.post(
+            "/api/jobs",
+            files={"video": ("demo.mp4", b"fake-video", "video/mp4")},
+            data={
+                "scenario": json.dumps(
+                    {
+                        "title": "QA Job",
+                        "sections": [
+                            {
+                                "title": "Intro",
+                                "description": "Review QA",
+                                "timeRange": {"startSec": 0, "endSec": 5},
+                            }
+                        ],
+                    }
+                )
+            },
+        )
+        job_id = response.json()["id"]
+        job_dir = self.jobs_dir / job_id
+        output_dir = job_dir / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "qa.json").write_text(
+            json.dumps(
+                {
+                    "summary": {"status": "warn", "warningCount": 1, "failCount": 0},
+                    "reviews": {
+                        "heuristic": {"summary": {"status": "pass", "warningCount": 0, "failCount": 0}},
+                        "vision": {"summary": {"status": "warn", "warningCount": 1, "failCount": 0}},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        detail = self.client.get(f"/api/jobs/{job_id}")
+        self.assertEqual(detail.status_code, 200)
+        payload = detail.json()
+        self.assertTrue(payload["hasQa"])
+        self.assertTrue(payload["hasVisionQa"])
+        self.assertEqual(payload["qaReviewMethods"], ["heuristic", "vision"])
+
 
 class PipelineFlowE2ETest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:

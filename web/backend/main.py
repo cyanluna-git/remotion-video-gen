@@ -135,6 +135,28 @@ def tts_summary(job_dir: Path) -> dict:
     return summary
 
 
+def qa_summary(job_dir: Path, qa_data: dict | None) -> dict:
+    """Return QA provenance metadata for job detail surfaces."""
+    summary = {
+        "qaReviewMethods": [],
+        "hasVisionQa": False,
+    }
+    if not isinstance(qa_data, dict):
+        return summary
+
+    reviews = qa_data.get("reviews")
+    if isinstance(reviews, dict):
+        methods = [str(name) for name in reviews.keys()]
+        summary["qaReviewMethods"] = methods
+        summary["hasVisionQa"] = "vision" in reviews
+        return summary
+
+    method = qa_data.get("method")
+    if isinstance(method, str) and method:
+        summary["qaReviewMethods"] = [method]
+    return summary
+
+
 def job_summary(job_dir: Path) -> Optional[dict]:
     """Build a lightweight summary dict from a job directory."""
     meta_path = job_dir / "meta.json"
@@ -494,6 +516,7 @@ async def get_job(job_id: str) -> dict:
             summary = qa_data.get("summary", {})
             meta["qaStatus"] = summary.get("status")
             meta["qaWarningCount"] = summary.get("warningCount", 0)
+            meta.update(qa_summary(job_dir, qa_data))
         except (json.JSONDecodeError, OSError):
             meta["hasQa"] = False
 

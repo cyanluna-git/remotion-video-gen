@@ -144,6 +144,9 @@ python scripts/detect_silence.py input.mp4
 # .env (gitignored)
 ANTHROPIC_API_KEY=sk-ant-...    # Claude API key for edit script generation
 OPENAI_API_KEY=sk-...           # Optional OpenAI TTS provider key
+VISION_QA_PROVIDER=             # Optional: openai | mock
+VISION_QA_MODEL=gpt-4.1-mini    # Default OpenAI vision QA model
+VISION_QA_DETAIL=low            # Vision image detail for sampled frames
 CLIP_RANKING_PROVIDER=heuristic # Optional: heuristic | none
 TTS_PROVIDER=                   # Optional: openai | mock
 TTS_MODEL=gpt-4o-mini-tts       # Default OpenAI TTS model

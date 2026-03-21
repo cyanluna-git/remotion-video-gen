@@ -2,8 +2,10 @@ import unittest
 
 from scripts.post_render_review import (
     analyze_edit_contract,
+    maybe_run_vision_review,
     evaluate_blank_frames,
     sample_timestamps,
+    summarize_edit_context,
     summarize_checks,
 )
 
@@ -62,6 +64,54 @@ class PostRenderReviewTest(unittest.TestCase):
         self.assertEqual(summary["status"], "fail")
         self.assertEqual(summary["warningCount"], 1)
         self.assertEqual(summary["failCount"], 1)
+
+    def test_summarize_edit_context_counts_clips_and_captions(self) -> None:
+        summary = summarize_edit_context(
+            {
+                "timeline": [
+                    {"type": "title-card", "durationSec": 2},
+                    {
+                        "type": "clip",
+                        "overlays": [
+                            {"type": "caption", "text": "Hello", "startSec": 0, "durationSec": 2}
+                        ],
+                    },
+                ],
+                "audio": {"voiceover": {"tracks": [{"src": "voiceover/demo.wav"}]}},
+            }
+        )
+
+        self.assertEqual(summary["timelineEntryCount"], 2)
+        self.assertEqual(summary["clipCount"], 1)
+        self.assertEqual(summary["captionOverlayCount"], 1)
+        self.assertTrue(summary["hasVoiceover"])
+
+    def test_mock_vision_review_warns_on_dark_frames(self) -> None:
+        review = maybe_run_vision_review(
+            heuristic_review={
+                "summary": {"status": "pass"},
+                "thumbnail": {
+                    "candidates": [
+                        {
+                            "timeSec": 1.0,
+                            "path": "output/qa-frames/sample-1.jpg",
+                            "selected": True,
+                            "extracted": True,
+                            "yavg": 10.0,
+                        }
+                    ]
+                },
+            },
+            edit=None,
+            provider_name="mock",
+            model="deterministic-v1",
+            detail="low",
+        )
+
+        assert review is not None
+        self.assertEqual(review["method"], "vision")
+        self.assertEqual(review["summary"]["status"], "warn")
+        self.assertEqual(len(review["findings"]), 1)
 
 
 if __name__ == "__main__":

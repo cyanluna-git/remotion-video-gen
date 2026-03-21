@@ -4,12 +4,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+try:
+    from multimodal_contracts import normalize_qa_artifact
+    from vision_review import VisionReviewError, VisionReviewRequest, build_vision_review_provider
+except ModuleNotFoundError:
+    from scripts.multimodal_contracts import normalize_qa_artifact
+    from scripts.vision_review import (
+        VisionReviewError,
+        VisionReviewRequest,
+        build_vision_review_provider,
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -20,6 +32,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-json", type=Path, required=True)
     parser.add_argument("--thumbnail-output", type=Path, required=True)
     parser.add_argument("--edit-json", type=Path, default=None)
+    parser.add_argument(
+        "--vision-provider",
+        default=os.environ.get("VISION_QA_PROVIDER", ""),
+        help="Optional vision QA provider (e.g. openai, mock)",
+    )
+    parser.add_argument(
+        "--vision-model",
+        default=os.environ.get("VISION_QA_MODEL", "gpt-4.1-mini"),
+        help="Vision QA model name (default: gpt-4.1-mini)",
+    )
+    parser.add_argument(
+        "--vision-detail",
+        default=os.environ.get("VISION_QA_DETAIL", "low"),
+        help="Vision QA image detail level (default: low)",
+    )
     return parser.parse_args(argv)
 
 
@@ -309,7 +336,29 @@ def summarize_checks(checks: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_review(video_path: Path, edit_json: Path | None, thumbnail_output: Path) -> dict[str, Any]:
+def summarize_edit_context(edit: dict[str, Any] | None) -> dict[str, Any]:
+    """Return compact edit metadata for the vision reviewer."""
+    if not edit:
+        return {}
+
+    timeline = edit.get("timeline", [])
+    clip_count = sum(1 for entry in timeline if isinstance(entry, dict) and entry.get("type") == "clip")
+    caption_count = 0
+    for entry in timeline:
+        if not isinstance(entry, dict):
+            continue
+        for overlay in entry.get("overlays", []):
+            if isinstance(overlay, dict) and overlay.get("type") == "caption":
+                caption_count += 1
+    return {
+        "timelineEntryCount": len(timeline) if isinstance(timeline, list) else 0,
+        "clipCount": clip_count,
+        "captionOverlayCount": caption_count,
+        "hasVoiceover": bool(edit.get("audio", {}).get("voiceover")) if isinstance(edit.get("audio"), dict) else False,
+    }
+
+
+def build_heuristic_review(video_path: Path, edit_json: Path | None, thumbnail_output: Path) -> dict[str, Any]:
     duration_sec = get_video_duration(video_path)
     thumbnail = select_representative_thumbnail(video_path, thumbnail_output, duration_sec)
     edit = load_edit_json(edit_json)
@@ -329,6 +378,37 @@ def build_review(video_path: Path, edit_json: Path | None, thumbnail_output: Pat
     }
 
 
+def maybe_run_vision_review(
+    *,
+    heuristic_review: dict[str, Any],
+    edit: dict[str, Any] | None,
+    provider_name: str,
+    model: str,
+    detail: str,
+) -> dict[str, Any] | None:
+    """Run an optional second-pass vision review over sampled frames."""
+    normalized_provider = provider_name.strip().lower()
+    if not normalized_provider or normalized_provider == "none":
+        return None
+
+    frame_samples = heuristic_review.get("thumbnail", {}).get("candidates", [])
+    if not isinstance(frame_samples, list) or not frame_samples:
+        return None
+
+    provider = build_vision_review_provider(
+        normalized_provider,
+        model=model,
+        detail=detail,
+    )
+    return provider.review(
+        VisionReviewRequest(
+            frame_samples=frame_samples,
+            heuristic_review=heuristic_review,
+            edit_context=summarize_edit_context(edit),
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
@@ -337,13 +417,46 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     try:
-        review = build_review(args.video, args.edit_json, args.thumbnail_output)
+        heuristic_review = build_heuristic_review(args.video, args.edit_json, args.thumbnail_output)
     except Exception as exc:
         print(f"ERROR: Failed to generate post-render review: {exc}", file=sys.stderr)
         sys.exit(1)
 
+    edit = load_edit_json(args.edit_json)
+    vision_review = None
+    try:
+        vision_review = maybe_run_vision_review(
+            heuristic_review=heuristic_review,
+            edit=edit,
+            provider_name=args.vision_provider,
+            model=args.vision_model,
+            detail=args.vision_detail,
+        )
+    except VisionReviewError as exc:
+        print(f"WARNING: Vision QA skipped: {exc}", file=sys.stderr)
+
+    combined_review = normalize_qa_artifact(heuristic_review, vision_review)
+    heuristic_path = args.output_json.with_name("qa.heuristic.json")
+    vision_path = args.output_json.with_name("qa.vision.json")
+
+    heuristic_path.parent.mkdir(parents=True, exist_ok=True)
+    heuristic_path.write_text(
+        json.dumps(heuristic_review, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    if vision_review is not None:
+        vision_path.write_text(
+            json.dumps(vision_review, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    elif vision_path.exists():
+        vision_path.unlink()
+
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
-    args.output_json.write_text(json.dumps(review, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    args.output_json.write_text(
+        json.dumps(combined_review, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
     print(f"Saved QA review to: {args.output_json}")
     print(f"Saved representative thumbnail to: {args.thumbnail_output}")
 
