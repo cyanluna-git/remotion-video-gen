@@ -58,9 +58,9 @@ INPUT                          AI ANALYSIS                    OUTPUT
       ▼          ▼
 ┌──────────┐ ┌──────────┐
 │ Step 2a  │ │ Step 2b  │  ← 병렬 실행
-│ Whisper  │ │ ffmpeg   │
-│ 음성→자막 │ │ 씬/묵음   │
-│          │ │ 감지      │
+│ Whisper  │ │PyScene   │
+│ 음성→자막 │ │Detect    │
+│          │ │+묵음감지  │
 └────┬─────┘ └────┬─────┘
      │            │
      ▼            ▼
@@ -119,6 +119,68 @@ input.mp4
 2. **단계 독립성** — 각 Step을 단독 실행 가능. 실패 시 해당 단계만 재실행
 3. **중간 결과 캐싱** — `.work/`에 중간 파일 보존. 시나리오만 바꿔서 Step 3부터 재실행 가능
 4. **Remotion은 렌더러일 뿐** — 편집 로직은 edit.json에, Remotion은 해석/합성만 담당
+
+### 기술 선택 근거 (리서치 기반)
+
+#### Video 컴포넌트: `<Video>` from `@remotion/media` (v4.0.354+)
+
+| 항목 | `<Video>` (신규, 권장) | `<OffthreadVideo>` (기존) |
+|------|----------------------|-------------------------|
+| 기술 | Mediabunny + WebCodecs | Rust + FFmpeg |
+| 프레임 정확도 | Perfect | Perfect |
+| 속도 | **가장 빠름** | 빠름 |
+| 장시간 영상 | 안정적 | **10분+ 시 캐시 비대 → 렌더링 급격 저하** |
+| 루프 지원 | Yes | No |
+
+> **결정**: `<Video>`를 기본으로 사용. 지원 안 되는 코덱에만 `<OffthreadVideo>` fallback.
+> OffthreadVideo의 장시간 녹화 이슈는 Remotion GitHub #3070, #3088에서 확인됨.
+
+#### 씬 감지: PySceneDetect (AdaptiveDetector)
+
+| 항목 | ffmpeg `scene` filter | PySceneDetect |
+|------|----------------------|---------------|
+| 알고리즘 | 단일 luma 차이 | Content, Adaptive, Hash, Histogram 등 |
+| 스크린 녹화 적합성 | **낮음** (커서/스크롤 오탐) | **높음** (AdaptiveDetector가 정적 UI 변화 필터링) |
+| 오탐 제어 | threshold만 | `min_scene_len`, adaptive windowing, HSV 가중치 |
+| Python 연동 | subprocess 파싱 | 네이티브 API |
+
+> **결정**: `AdaptiveDetector(adaptive_threshold=3.0, min_scene_len=15)`를 기본으로.
+> 묵음 감지는 여전히 ffmpeg `silencedetect` 사용 (간단하고 정확).
+
+```python
+from scenedetect import detect, AdaptiveDetector, open_video
+video = open_video("recording.mp4")
+scenes = detect(video, AdaptiveDetector(
+    adaptive_threshold=3.0,
+    min_scene_len=15,
+    min_content_val=15.0,
+))
+```
+
+#### Whisper 모델: `large-v3-turbo`
+
+| 모델 | 파라미터 | 한/영 혼합 | 속도 | 비고 |
+|------|---------|-----------|------|------|
+| medium | 769M | 보통 | 빠름 | 한국어 정확도 부족 |
+| large-v3 | 1550M | 최고 | **느림** | 최고 정확도 |
+| **large-v3-turbo** | 809M | **좋음** | **빠름** | 디코더 4층 (vs large의 32층) |
+
+> **결정**: `large-v3-turbo` 기본. `language=None` (자동감지)로 한/영 code-switching 대응.
+> 한국어 fine-tuned 버전도 HuggingFace에 존재 (`ghost613/whisper-large-v3-turbo-korean`).
+
+#### 트랜지션: `@remotion/transitions`
+
+빌트인 프레젠테이션: `fade()`, `slide()`, `wipe()`, `flip()`, `clockWipe()`, `none()`
+- `TransitionSeries`로 시퀀스 사이에 삽입
+- 타이밍: `linearTiming`, `springTiming`
+- 총 duration = 시퀀스 합 - 트랜지션 합
+
+#### 오디오: 네이티브 멀티트랙 믹싱
+
+Remotion은 여러 `<Audio>` 컴포넌트를 자동 믹싱:
+- 원본 비디오 오디오 + 배경음악 + 나레이션 동시 렌더
+- `volume` prop으로 프레임별 볼륨 제어 (ducking 가능)
+- `interpolate()`로 fade-in/out 구현
 
 ---
 
@@ -282,15 +344,14 @@ interface AudioConfig {
 
 ### 4-1. Whisper 자막 생성
 
-**모델 선택**: `medium` (한국어+영어 혼합 음성에 적합한 밸런스)
-- `small`: 빠르지만 한국어 정확도 부족
-- `medium`: 한/영 혼합에 실용적
-- `large-v3`: 최고 정확도, 느림 (최종 품질 필요 시)
+**모델**: `large-v3-turbo` (809M params, 한/영 혼합 최적 밸런스)
+- `language=None` 으로 자동감지 — 한/영 code-switching 대응
+- `--word_timestamps True`로 단어 수준 타임스탬프
 
 ```bash
 whisper audio.wav \
-  --model medium \
-  --language ko \
+  --model large-v3-turbo \
+  --language None \
   --output_format json \
   --word_timestamps True \
   --output_dir .work/
@@ -310,19 +371,27 @@ whisper audio.wav \
 }
 ```
 
-### 4-2. ffmpeg 씬/묵음 감지
+### 4-2. 씬/묵음 감지
 
-**씬 변경 감지** — 스크린 녹화 특성 고려:
-- 스크린 녹화는 실사 영상보다 씬 변화가 명확 (페이지 전환, 모달 열기)
-- threshold `0.15~0.25` 권장 (실사 영상의 `0.3~0.4`보다 민감하게)
+**씬 변경 감지 — PySceneDetect (AdaptiveDetector)**
+
+ffmpeg의 `scene` 필터는 스크린 녹화에서 커서 이동/스크롤을 오탐하는 문제가 있음.
+PySceneDetect의 `AdaptiveDetector`는 롤링 평균으로 정적 UI 변화를 필터링하여 정확도가 높음.
+
+```python
+from scenedetect import detect, AdaptiveDetector, open_video
+
+video = open_video("normalized.mp4")
+scenes = detect(video, AdaptiveDetector(
+    adaptive_threshold=3.0,   # 낮을수록 민감 (기본 3.0)
+    min_scene_len=15,          # 최소 15프레임 간격
+    min_content_val=15.0,      # 이 이하 점수는 무시
+))
+```
+
+**묵음 감지 — ffmpeg silencedetect** (간단하고 정확하므로 유지)
 
 ```bash
-# 씬 감지
-ffmpeg -i normalized.mp4 \
-  -filter:v "select='gt(scene,0.2)',showinfo" \
-  -f null - 2>&1 | grep pts_time
-
-# 묵음 감지 (2초 이상 무음)
 ffmpeg -i normalized.mp4 \
   -af "silencedetect=noise=-30dB:d=2" \
   -f null - 2>&1 | grep silence
@@ -414,7 +483,7 @@ remotion-video-gen/
 |------|------|--------|
 | Remotion 프로젝트 init | `npm init video@latest` + 구조 정리 | `remotion/` |
 | EditScript 타입 정의 | TypeScript 인터페이스 | `types/script.ts` |
-| ScriptDrivenVideo | edit.json → Sequence + OffthreadVideo | `ScriptDrivenVideo.tsx` |
+| ScriptDrivenVideo | edit.json → Sequence + Video (@remotion/media) | `ScriptDrivenVideo.tsx` |
 | ClipSegment | 비디오 클립 + startFrom | `ClipSegment.tsx` |
 | TitleCard | 타이틀 카드 (텍스트, 배경색) | `TitleCard.tsx` |
 | Example edit.json | 수동 작성 테스트용 | `scenarios/example.json` |
@@ -427,7 +496,7 @@ remotion-video-gen/
 
 | Task | 설명 | 산출물 |
 |------|------|--------|
-| transcribe.py | Whisper 래퍼 (medium, 한/영) | `scripts/transcribe.py` |
+| transcribe.py | Whisper 래퍼 (large-v3-turbo, 한/영) | `scripts/transcribe.py` |
 | detect_scenes.py | ffmpeg 씬 감지 + JSON 출력 | `scripts/detect_scenes.py` |
 | detect_silence.py | ffmpeg 묵음 감지 + JSON 출력 | `scripts/detect_silence.py` |
 | convert_captions.py | Whisper → Remotion 자막 변환 | `scripts/convert_captions.py` |
@@ -483,6 +552,7 @@ python >= 3.10
 ```
 openai-whisper>=20231117
 anthropic>=0.40.0
+scenedetect[opencv]>=0.6.4
 ```
 
 ### Node.js (Remotion)
@@ -490,6 +560,7 @@ anthropic>=0.40.0
 ```
 remotion
 @remotion/cli
+@remotion/media
 @remotion/media-utils
 @remotion/transitions
 @remotion/renderer
@@ -501,10 +572,10 @@ remotion
 
 | Risk | Impact | Mitigation |
 |------|--------|-----------|
-| 장시간 녹화 메모리 이슈 | Remotion 렌더링 OOM | `<OffthreadVideo>` 사용, ffmpeg로 사전 분할 |
+| 장시간 녹화 메모리 이슈 | Remotion 렌더링 OOM | `<Video>` (@remotion/media) 사용, 필요 시 ffmpeg로 사전 분할 |
 | Whisper 한국어 정확도 | 자막 품질 저하 | Claude 교정 후처리, `large-v3` 모델 옵션 |
 | Claude 편집 결정 품질 | 어색한 편집 | edit.json 수동 미세조정 가능하게 설계 |
-| ffmpeg 씬 감지 오탐 | 불필요한 컷 | threshold 조정 + Claude가 필터링 |
+| PySceneDetect 씬 감지 오탐 | 불필요한 컷 | AdaptiveDetector + min_scene_len + Claude 필터링 |
 | Remotion Chromium 의존 | 첫 실행 느림, 서버 환경 제약 | 로컬 개발 환경 기준, 필요 시 Docker |
 | 렌더링 속도 | 긴 영상 시 수십 분 | `--concurrency=N` 병렬 프레임, 사전 분할 |
 

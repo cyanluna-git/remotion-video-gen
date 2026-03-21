@@ -46,7 +46,8 @@ remotion-video-gen/
 |-------|-----------|
 | Video Framework | Remotion 4.x (React + TypeScript) |
 | Video Processing | ffmpeg (libx264) |
-| Speech-to-Text | Whisper (openai-whisper, medium/large model) |
+| Speech-to-Text | Whisper large-v3-turbo (openai-whisper) |
+| Scene Detection | PySceneDetect (AdaptiveDetector) |
 | AI Edit/Caption | Claude API (anthropic SDK) |
 | Scripts | Python 3.12+ (type hints, Black) |
 | Pipeline | Bash |
@@ -88,9 +89,15 @@ remotion-video-gen/
 - 중간 결과물은 `.work/`에 저장하여 재사용
 - 실패 시 해당 단계만 재실행
 
-### OffthreadVideo 사용
-- 장시간 스크린 녹화에 `<OffthreadVideo>` 필수
-- `<Video>` 는 메모리 이슈로 사용하지 않음
+### Video 컴포넌트 선택
+- `<Video>` from `@remotion/media` (v4.0.354+) 기본 사용 — Mediabunny + WebCodecs, 가장 빠름
+- `<OffthreadVideo>`는 장시간 녹화에서 캐시 비대/렌더 저하 문제 확인됨 (GitHub #3070)
+- `<OffthreadVideo>`는 지원 안 되는 코덱 fallback 용도로만
+
+### 씬 감지: PySceneDetect
+- ffmpeg `scene` filter는 스크린 녹화에서 커서/스크롤 오탐 → PySceneDetect로 교체
+- `AdaptiveDetector(adaptive_threshold=3.0, min_scene_len=15)` 사용
+- 묵음 감지만 ffmpeg `silencedetect` 유지
 
 ## CLI Commands
 
