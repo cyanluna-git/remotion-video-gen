@@ -32,6 +32,7 @@ remotion-video-gen/
 │   ├── transcribe.py
 │   ├── detect_scenes.py
 │   ├── detect_silence.py
+│   ├── generate_scenario.py
 │   ├── generate_edit.py
 │   └── convert_captions.py
 ├── scenarios/               # 시나리오 JSON/MD
@@ -113,6 +114,9 @@ cd remotion && npx remotion render ScriptDrivenVideo output.mp4 --props=edit.jso
 
 # Whisper 자막
 python scripts/transcribe.py input.mp4
+
+# 분석 결과로 시나리오 생성
+python scripts/generate_scenario.py --transcript .work/transcript.json --video input.mp4 --output .work/scenario.generated.json
 
 # 씬/묵음 감지
 python scripts/detect_scenes.py input.mp4

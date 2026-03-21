@@ -267,3 +267,24 @@ The simplest valid scenario is:
 ```
 
 Everything else is optional and will use sensible defaults.
+
+### AI-assisted scenario generation
+
+When you do not want to hand-author sections, the pipeline can generate a canonical `scenario.json` from Step 2 artifacts:
+
+```bash
+python scripts/generate_scenario.py \
+  --transcript .work/transcript.json \
+  --scenes .work/scenes.json \
+  --silences .work/silences.json \
+  --video input.mp4 \
+  --output .work/scenario.generated.json \
+  --prompt-output .work/scenario.prompt.txt \
+  --error-output .work/scenario.error.txt
+```
+
+- Output still uses the same canonical schema documented above.
+- Title falls back to the source filename when you do not provide `--title`.
+- Language falls back to Whisper detection when available, otherwise `"auto"`.
+- Generated sections are validated for canonical shape, non-overlap, and source-duration bounds before the file is saved.
+- The resulting `scenario.generated.json` is the intended handoff into `scripts/generate_edit.py`.

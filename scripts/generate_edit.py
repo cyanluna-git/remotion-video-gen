@@ -22,13 +22,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
-import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
 
-from scenario_contract import ScenarioContractError, normalize_scenario
+try:
+    from claude_json import call_claude_json
+    from scenario_contract import ScenarioContractError, normalize_scenario
+    from scenario_generation import get_video_duration, load_json_file
+except ModuleNotFoundError:
+    from scripts.claude_json import call_claude_json
+    from scripts.scenario_contract import ScenarioContractError, normalize_scenario
+    from scripts.scenario_generation import get_video_duration, load_json_file
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -79,47 +84,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Engine: 'cli' uses claude -p (default), 'api' uses Anthropic SDK",
     )
     return parser.parse_args(argv)
-
-
-def load_json_file(path: Path, label: str) -> Optional[dict | list]:
-    """Load a JSON file, returning None if it doesn't exist."""
-    if path is None or not path.exists():
-        if path is not None:
-            print(f"  Warning: {label} not found at {path}, skipping.")
-        return None
-
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    print(f"  Loaded {label}: {path}")
-    return data
-
-
-def get_video_duration(video_path: Path) -> Optional[float]:
-    """Get video duration in seconds via ffprobe."""
-    if video_path is None or not video_path.exists():
-        if video_path is not None:
-            print(f"  Warning: Video not found at {video_path}, skipping duration detection.")
-        return None
-
-    cmd = [
-        "ffprobe",
-        "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        str(video_path),
-    ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        duration = float(result.stdout.strip())
-        print(f"  Video duration: {duration:.3f}s")
-        return duration
-    except FileNotFoundError:
-        print("  Warning: ffprobe not found, skipping duration detection.", file=sys.stderr)
-        return None
-    except (subprocess.CalledProcessError, ValueError) as exc:
-        print(f"  Warning: Failed to get video duration: {exc}", file=sys.stderr)
-        return None
-
 
 def extract_transcript_segments(transcript: dict | list | None, limit: int = 100) -> list[dict]:
     """Extract transcript segments (up to limit) from Whisper output."""
@@ -207,148 +171,13 @@ def build_prompt(
     return "\n".join(parts)
 
 
-def extract_json_from_response(text: str) -> dict:
-    """Parse JSON from Claude's response, handling markdown fencing."""
-    stripped = text.strip()
-
-    # Direct parse
-    try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        pass
-
-    # Try markdown fenced block
-    pattern = r"```(?:json)?\s*\n?(.*?)\n?\s*```"
-    match = re.search(pattern, stripped, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(1).strip())
-        except json.JSONDecodeError:
-            pass
-
-    # Try finding bare JSON object
-    json_pattern = r"\{[\s\S]*\}"
-    match = re.search(json_pattern, stripped)
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            pass
-
-    raise ValueError("Could not extract valid JSON from Claude's response.")
-
-
-def validate_edit_script(edit: dict) -> None:
+def validate_edit_script(edit: dict) -> dict:
     """Validate that the edit script contains required fields."""
     required_fields = ["version", "fps", "resolution", "sources", "timeline"]
     missing = [f for f in required_fields if f not in edit]
     if missing:
         raise ValueError(f"Edit script missing required fields: {', '.join(missing)}")
-
-
-# ═══════════════════════════════════════════
-# Engine: CLI (claude -p)
-# ═══════════════════════════════════════════
-
-def call_claude_cli(prompt: str, retry: bool = True) -> dict:
-    """Call Claude via `claude -p` CLI and return parsed edit script JSON."""
-    print("Calling Claude CLI (claude -p)...")
-
-    cmd = ["claude", "-p", prompt]
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-    except FileNotFoundError:
-        print("ERROR: 'claude' CLI not found. Is Claude Code installed?", file=sys.stderr)
-        sys.exit(1)
-    except subprocess.TimeoutExpired:
-        print("ERROR: Claude CLI timed out after 120s.", file=sys.stderr)
-        sys.exit(1)
-
-    if result.returncode != 0:
-        print(f"ERROR: Claude CLI exited with code {result.returncode}", file=sys.stderr)
-        if result.stderr:
-            print(f"  stderr: {result.stderr[:500]}", file=sys.stderr)
-        sys.exit(1)
-
-    response_text = result.stdout
-    print(f"  Response received ({len(response_text)} chars)")
-
-    try:
-        edit = extract_json_from_response(response_text)
-        validate_edit_script(edit)
-        return edit
-    except (ValueError, json.JSONDecodeError) as exc:
-        if retry:
-            print(f"  Warning: First attempt failed ({exc}), retrying...")
-            retry_prompt = prompt + "\n\nIMPORTANT: Return ONLY valid JSON. No text before or after."
-            return call_claude_cli(retry_prompt, retry=False)
-        raise ValueError(f"Failed to get valid JSON from Claude CLI after retry: {exc}") from exc
-
-
-# ═══════════════════════════════════════════
-# Engine: API (Anthropic SDK)
-# ═══════════════════════════════════════════
-
-def call_claude_api(prompt: str, retry: bool = True) -> dict:
-    """Call Claude API via Anthropic SDK and return parsed edit script JSON."""
-    try:
-        import anthropic
-    except ImportError:
-        print("ERROR: anthropic SDK is not installed.", file=sys.stderr)
-        print("Install with: pip install anthropic", file=sys.stderr)
-        sys.exit(1)
-
-    api_key = _get_api_key()
-    if not api_key:
-        print("ERROR: ANTHROPIC_API_KEY environment variable is not set.", file=sys.stderr)
-        print("Set it in your .env file or export it:", file=sys.stderr)
-        print("  export ANTHROPIC_API_KEY=sk-ant-...", file=sys.stderr)
-        sys.exit(1)
-
-    client = anthropic.Anthropic(api_key=api_key)
-
-    print("Calling Claude API...")
-    try:
-        message = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=8000,
-            messages=[{"role": "user", "content": prompt}],
-        )
-    except Exception as exc:
-        print(f"ERROR: Claude API call failed: {exc}", file=sys.stderr)
-        raise
-
-    response_text = message.content[0].text
-    print(f"  Response received ({len(response_text)} chars)")
-
-    try:
-        edit = extract_json_from_response(response_text)
-        validate_edit_script(edit)
-        return edit
-    except (ValueError, json.JSONDecodeError) as exc:
-        if retry:
-            print(f"  Warning: First attempt failed ({exc}), retrying...")
-            retry_prompt = prompt + "\n\nIMPORTANT: Return ONLY valid JSON. No text before or after."
-            return call_claude_api(retry_prompt, retry=False)
-        raise ValueError(f"Failed to get valid JSON from Claude after retry: {exc}") from exc
-
-
-def _get_api_key() -> str | None:
-    """Get ANTHROPIC_API_KEY from environment, loading .env if possible."""
-    import os
-
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass
-
-    return os.environ.get("ANTHROPIC_API_KEY")
+    return edit
 
 
 # ═══════════════════════════════════════════
@@ -427,10 +256,11 @@ def main(argv: list[str] | None = None) -> None:
         video_duration=video_duration,
     )
 
-    if args.engine == "cli":
-        edit = call_claude_cli(prompt)
-    else:
-        edit = call_claude_api(prompt)
+    edit = call_claude_json(
+        prompt,
+        engine=args.engine,
+        validate=validate_edit_script,
+    )
 
     # Set sources.main to recordings path for Remotion
     sources = edit.get("sources", {})
