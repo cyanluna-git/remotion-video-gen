@@ -1,0 +1,11 @@
+node_modules/
+.work/
+output/
+remotion/public/recordings/
+dist/
+*.mp4
+*.wav
+*.webm
+.env
+.env.local
+.DS_Store
