@@ -1,8 +1,13 @@
 import React from "react";
 import { AbsoluteFill, Sequence } from "remotion";
+import { TransitionSeries, linearTiming } from "@remotion/transitions";
+import { fade } from "@remotion/transitions/fade";
+import { slide } from "@remotion/transitions/slide";
+import { wipe } from "@remotion/transitions/wipe";
 import { ClipSegment } from "./components/ClipSegment";
 import { TitleCard } from "./components/TitleCard";
-import type { EditScript, TimelineEntry } from "./types/script";
+import type { TransitionPresentation } from "@remotion/transitions";
+import type { EditScript, TimelineEntry, Transition } from "./types/script";
 
 export interface ScriptDrivenVideoProps extends Record<string, unknown> {
   script: EditScript;
@@ -16,10 +21,113 @@ function getEntryDurationSec(entry: TimelineEntry): number {
   return entry.durationSec;
 }
 
+function getPresentation(
+  transition: Transition,
+): TransitionPresentation<Record<string, unknown>> | undefined {
+  switch (transition.type) {
+    case "fade":
+      return fade();
+    case "slide-left":
+      return slide({ direction: "from-left" });
+    case "slide-right":
+      return slide({ direction: "from-right" });
+    case "wipe":
+      return wipe();
+    case "none":
+      return undefined;
+  }
+}
+
+function hasAnyTransition(timeline: TimelineEntry[]): boolean {
+  return timeline.some(
+    (entry) => entry.transition && entry.transition.type !== "none",
+  );
+}
+
+function renderEntryContent(
+  entry: TimelineEntry,
+  sources: Record<string, string>,
+): React.ReactNode {
+  if (entry.type === "clip") {
+    const src = sources[entry.source] ?? entry.source;
+    return (
+      <ClipSegment
+        src={src}
+        sourceStartSec={entry.startSec}
+        sourceEndSec={entry.endSec}
+        overlays={entry.overlays}
+      />
+    );
+  }
+
+  if (entry.type === "title-card") {
+    return (
+      <TitleCard
+        text={entry.text}
+        subtitle={entry.subtitle}
+        background={entry.background}
+      />
+    );
+  }
+
+  return null;
+}
+
 export const ScriptDrivenVideo: React.FC<ScriptDrivenVideoProps> = ({
   script,
 }) => {
   const { fps, timeline, sources } = script;
+
+  if (hasAnyTransition(timeline)) {
+    return (
+      <AbsoluteFill style={{ backgroundColor: "#000" }}>
+        <TransitionSeries>
+          {timeline.flatMap((entry, index) => {
+            const durationSec = getEntryDurationSec(entry);
+            const durationInFrames = Math.ceil(durationSec * fps);
+            const elements: React.ReactNode[] = [];
+
+            if (
+              index > 0 &&
+              entry.transition &&
+              entry.transition.type !== "none"
+            ) {
+              const presentation = getPresentation(entry.transition);
+              const transitionDurationInFrames = Math.ceil(
+                entry.transition.durationSec * fps,
+              );
+              elements.push(
+                <TransitionSeries.Transition
+                  key={`transition-${index}`}
+                  presentation={presentation}
+                  timing={linearTiming({
+                    durationInFrames: transitionDurationInFrames,
+                  })}
+                />,
+              );
+            }
+
+            const name =
+              entry.type === "clip"
+                ? `clip-${entry.source}`
+                : `title-${index}`;
+
+            elements.push(
+              <TransitionSeries.Sequence
+                key={`seq-${index}`}
+                durationInFrames={durationInFrames}
+                name={name}
+              >
+                {renderEntryContent(entry, sources)}
+              </TransitionSeries.Sequence>,
+            );
+
+            return elements;
+          })}
+        </TransitionSeries>
+      </AbsoluteFill>
+    );
+  }
 
   let currentFrame = 0;
 
@@ -31,43 +139,19 @@ export const ScriptDrivenVideo: React.FC<ScriptDrivenVideoProps> = ({
         const from = currentFrame;
         currentFrame += durationInFrames;
 
-        if (entry.type === "clip") {
-          const src = sources[entry.source] ?? entry.source;
-          return (
-            <Sequence
-              key={index}
-              from={from}
-              durationInFrames={durationInFrames}
-              name={`clip-${entry.source}`}
-            >
-              <ClipSegment
-                src={src}
-                sourceStartSec={entry.startSec}
-                sourceEndSec={entry.endSec}
-                overlays={entry.overlays}
-              />
-            </Sequence>
-          );
-        }
+        const name =
+          entry.type === "clip" ? `clip-${entry.source}` : `title-${index}`;
 
-        if (entry.type === "title-card") {
-          return (
-            <Sequence
-              key={index}
-              from={from}
-              durationInFrames={durationInFrames}
-              name={`title-${index}`}
-            >
-              <TitleCard
-                text={entry.text}
-                subtitle={entry.subtitle}
-                background={entry.background}
-              />
-            </Sequence>
-          );
-        }
-
-        return null;
+        return (
+          <Sequence
+            key={index}
+            from={from}
+            durationInFrames={durationInFrames}
+            name={name}
+          >
+            {renderEntryContent(entry, sources)}
+          </Sequence>
+        );
       })}
     </AbsoluteFill>
   );

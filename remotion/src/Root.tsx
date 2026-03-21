@@ -26,11 +26,24 @@ function getTimelineEntryDurationSec(
 
 function calculateTotalDurationInFrames(script: EditScript): number {
   const fps = script.fps;
-  const totalSec = script.timeline.reduce(
+
+  const totalSequenceSec = script.timeline.reduce(
     (acc, entry) => acc + getTimelineEntryDurationSec(entry),
     0,
   );
 
+  const totalTransitionSec = script.timeline.reduce((acc, entry, index) => {
+    if (
+      index > 0 &&
+      entry.transition &&
+      entry.transition.type !== "none"
+    ) {
+      return acc + entry.transition.durationSec;
+    }
+    return acc;
+  }, 0);
+
+  const totalSec = totalSequenceSec - totalTransitionSec;
   const totalFrames = Math.ceil(totalSec * fps);
   return Math.max(totalFrames, 1);
 }
