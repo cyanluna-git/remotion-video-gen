@@ -30,11 +30,11 @@ from typing import Optional
 try:
     from claude_json import call_claude_json
     from scenario_contract import ScenarioContractError, normalize_scenario
-    from scenario_generation import get_video_duration, load_json_file
+    from scenario_generation import get_video_duration, load_json_file, summarize_clip_ranking
 except ModuleNotFoundError:
     from scripts.claude_json import call_claude_json
     from scripts.scenario_contract import ScenarioContractError, normalize_scenario
-    from scripts.scenario_generation import get_video_duration, load_json_file
+    from scripts.scenario_generation import get_video_duration, load_json_file, summarize_clip_ranking
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -65,6 +65,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help="Silence detection JSON file (optional)",
+    )
+    parser.add_argument(
+        "--clip-ranking",
+        type=Path,
+        default=None,
+        help="Clip ranking JSON artifact (optional)",
     )
     parser.add_argument(
         "--video",
@@ -119,6 +125,7 @@ def build_prompt(
     transcript_segments: list[dict],
     scenes: list | None,
     silences: list | None,
+    clip_ranking: dict | None,
     voiceover_manifest: dict | list | None,
     video_duration: float | None,
 ) -> str:
@@ -152,6 +159,11 @@ def build_prompt(
         parts.append(f"\n## Silence Segments ({len(silences)} detected)\n")
         parts.append(json.dumps(silences, indent=2, ensure_ascii=False))
 
+    clip_ranking_summary = summarize_clip_ranking(clip_ranking)
+    if clip_ranking_summary:
+        parts.append(f"\n## Clip Ranking Hints ({len(clip_ranking_summary)} candidates)\n")
+        parts.append(json.dumps(clip_ranking_summary, indent=2, ensure_ascii=False))
+
     if voiceover_manifest:
         parts.append("\n## Voiceover Manifest\n")
         parts.append(json.dumps(voiceover_manifest, indent=2, ensure_ascii=False))
@@ -166,6 +178,7 @@ def build_prompt(
     parts.append("- Place caption overlays from the Whisper transcript at their correct timestamps within the clip.")
     parts.append('- Correct Whisper transcript errors for technical terms (e.g. "모드버스"→"Modbus").')
     parts.append('- Caption overlays may include `captionClass`: use `subtitle` by default, `announcement` for key callouts, and `technical-term` for important product or engineering terms.')
+    parts.append("- When clip-ranking hints are present, use higher-ranked windows as guidance for which moments deserve emphasis, denser captioning, or cleaner clip boundaries within each scenario section.")
 
     transition = style.get("transition", "fade")
     transition_dur = style.get("transitionDuration", 0.5)
@@ -259,6 +272,7 @@ def main(argv: list[str] | None = None) -> None:
     transcript = load_json_file(args.transcript, "transcript") if args.transcript else None
     scenes = load_json_file(args.scenes, "scenes") if args.scenes else None
     silences = load_json_file(args.silences, "silences") if args.silences else None
+    clip_ranking = load_json_file(args.clip_ranking, "clip ranking") if args.clip_ranking else None
     voiceover_manifest = (
         load_json_file(args.voiceover_manifest, "voiceover manifest")
         if args.voiceover_manifest
@@ -274,6 +288,7 @@ def main(argv: list[str] | None = None) -> None:
         transcript_segments=transcript_segments,
         scenes=scenes if isinstance(scenes, list) else None,
         silences=silences if isinstance(silences, list) else None,
+        clip_ranking=clip_ranking if isinstance(clip_ranking, dict) else None,
         voiceover_manifest=voiceover_manifest,
         video_duration=video_duration,
     )

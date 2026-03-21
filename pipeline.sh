@@ -74,6 +74,10 @@ print_usage() {
   echo "  --edit-output PATH Where generated edit.json should be saved (default: .work/edit.json)"
   echo "  --voiceover-manifest PATH"
   echo "                     Optional provider-agnostic narration manifest to feed into edit generation"
+  echo "  --clip-ranking PATH"
+  echo "                     Optional clip-ranking artifact to feed into scenario/edit generation"
+  echo "  --clip-ranking-provider NAME"
+  echo "                     Clip-ranking provider (default: heuristic, use 'none' to disable)"
   echo "  --tts-provider NAME"
   echo "                     Optional TTS provider to generate voiceover assets before edit generation"
   echo "  --tts-model NAME  TTS model override (default: gpt-4o-mini-tts)"
@@ -106,6 +110,8 @@ PROMPT_OUTPUT=""
 SCENARIO_ERROR_OUTPUT=""
 EDIT_OUTPUT=""
 VOICEOVER_MANIFEST=""
+CLIP_RANKING_ARTIFACT=""
+CLIP_RANKING_PROVIDER="${CLIP_RANKING_PROVIDER:-heuristic}"
 TTS_PROVIDER="${TTS_PROVIDER:-}"
 TTS_MODEL="${TTS_MODEL:-gpt-4o-mini-tts}"
 TTS_VOICE="${TTS_VOICE:-alloy}"
@@ -131,6 +137,8 @@ while [ $# -gt 0 ]; do
     --scenario-error-output) SCENARIO_ERROR_OUTPUT="$2"; shift ;;
     --edit-output) EDIT_OUTPUT="$2"; shift ;;
     --voiceover-manifest) VOICEOVER_MANIFEST="$2"; shift ;;
+    --clip-ranking) CLIP_RANKING_ARTIFACT="$2"; shift ;;
+    --clip-ranking-provider) CLIP_RANKING_PROVIDER="$2"; shift ;;
     --tts-provider) TTS_PROVIDER="$2"; shift ;;
     --tts-model) TTS_MODEL="$2"; shift ;;
     --tts-voice) TTS_VOICE="$2"; shift ;;
@@ -268,8 +276,36 @@ SCENES="$WORK_DIR/scenes.json"
 SILENCES="$WORK_DIR/silences.json"
 CAPTIONS="$WORK_DIR/captions.json"
 AI_EDIT="$EDIT_OUTPUT"
+DEFAULT_CLIP_RANKING_ARTIFACT="$(dirname "$AI_EDIT")/analysis/clip-ranking.json"
 DEFAULT_VOICEOVER_MANIFEST="$(dirname "$AI_EDIT")/voiceover/manifest.json"
 VOICEOVER_ERROR_OUTPUT="$(dirname "$DEFAULT_VOICEOVER_MANIFEST")/error.json"
+
+if [ -z "$CLIP_RANKING_ARTIFACT" ] && [ -n "$CLIP_RANKING_PROVIDER" ] && [ "$CLIP_RANKING_PROVIDER" != "none" ]; then
+  CLIP_STATE="provider=$CLIP_RANKING_PROVIDER"
+  [ -f "$TRANSCRIPT" ] && CLIP_STATE="$CLIP_STATE|transcript=$(md5 -q "$TRANSCRIPT" 2>/dev/null || md5sum "$TRANSCRIPT" | cut -d' ' -f1)"
+  [ -f "$SCENES" ] && CLIP_STATE="$CLIP_STATE|scenes=$(md5 -q "$SCENES" 2>/dev/null || md5sum "$SCENES" | cut -d' ' -f1)"
+  [ -f "$SILENCES" ] && CLIP_STATE="$CLIP_STATE|silences=$(md5 -q "$SILENCES" 2>/dev/null || md5sum "$SILENCES" | cut -d' ' -f1)"
+  [ -f "$NORMALIZED" ] && CLIP_STATE="$CLIP_STATE|video=$INPUT_MD5"
+  CLIP_RANKING_MD5=$(printf '%s' "$CLIP_STATE" | md5 -q 2>/dev/null || printf '%s' "$CLIP_STATE" | md5sum | cut -d' ' -f1)
+  if [ -f "$WORK_DIR/clip-ranking.md5" ]; then
+    PREV_CLIP_RANKING_MD5=$(cat "$WORK_DIR/clip-ranking.md5")
+    if [ "$CLIP_RANKING_MD5" != "$PREV_CLIP_RANKING_MD5" ]; then
+      echo "  [INVALIDATE] Clip-ranking inputs changed, clearing ranking cache"
+      rm -f "$AI_EDIT"
+      [ "$AUTO_SCENARIO" = true ] && rm -f "$SCENARIO_OUTPUT"
+      rm -f "$DEFAULT_CLIP_RANKING_ARTIFACT"
+    fi
+  fi
+  echo "$CLIP_RANKING_MD5" > "$WORK_DIR/clip-ranking.md5"
+else
+  if [ -f "$WORK_DIR/clip-ranking.md5" ] && [ -z "$CLIP_RANKING_ARTIFACT" ]; then
+    echo "  [INVALIDATE] Clip-ranking disabled, clearing ranking cache"
+    rm -f "$AI_EDIT"
+    [ "$AUTO_SCENARIO" = true ] && rm -f "$SCENARIO_OUTPUT"
+    rm -f "$DEFAULT_CLIP_RANKING_ARTIFACT"
+  fi
+  rm -f "$WORK_DIR/clip-ranking.md5"
+fi
 
 if [ -n "$TTS_PROVIDER" ]; then
   TTS_MD5=$(printf '%s' "$SCENARIO_MD5|$TTS_PROVIDER|$TTS_MODEL|$TTS_VOICE|$TTS_AUDIO_FORMAT|$TTS_INSTRUCTIONS" | md5 -q 2>/dev/null || printf '%s' "$SCENARIO_MD5|$TTS_PROVIDER|$TTS_MODEL|$TTS_VOICE|$TTS_AUDIO_FORMAT|$TTS_INSTRUCTIONS" | md5sum | cut -d' ' -f1)
@@ -454,6 +490,32 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ] && [ "$FROM_STEP" -le 3 ];
   echo "==========================================="
   STEP_START=$(date +%s)
 
+  if [ -z "$CLIP_RANKING_ARTIFACT" ] && [ -n "$CLIP_RANKING_PROVIDER" ] && [ "$CLIP_RANKING_PROVIDER" != "none" ]; then
+    if [ "$FORCE" = true ] || [ ! -f "$DEFAULT_CLIP_RANKING_ARTIFACT" ]; then
+      if [ -f "$TRANSCRIPT" ] || [ -f "$SCENES" ] || [ -f "$NORMALIZED" ]; then
+        echo "  [3a] Generating clip ranking via provider: $CLIP_RANKING_PROVIDER"
+        CLIP_ARGS=(
+          --provider "$CLIP_RANKING_PROVIDER"
+          --output "$DEFAULT_CLIP_RANKING_ARTIFACT"
+        )
+        [ -f "$TRANSCRIPT" ] && CLIP_ARGS+=(--transcript "$TRANSCRIPT")
+        [ -f "$SCENES" ] && CLIP_ARGS+=(--scenes "$SCENES")
+        [ -f "$SILENCES" ] && CLIP_ARGS+=(--silences "$SILENCES")
+        [ -f "$NORMALIZED" ] && CLIP_ARGS+=(--video "$NORMALIZED")
+        if python3 "$SCRIPTS_DIR/generate_clip_ranking.py" "${CLIP_ARGS[@]}"; then
+          echo "  [3a] [OK] Clip ranking: $DEFAULT_CLIP_RANKING_ARTIFACT"
+          CLIP_RANKING_ARTIFACT="$DEFAULT_CLIP_RANKING_ARTIFACT"
+        else
+          echo "  [3a] [WARN] Clip ranking failed; continuing without ranking hints"
+          CLIP_RANKING_ARTIFACT=""
+        fi
+      fi
+    else
+      echo "  [3a] [CACHE] Clip ranking exists: $DEFAULT_CLIP_RANKING_ARTIFACT"
+      CLIP_RANKING_ARTIFACT="$DEFAULT_CLIP_RANKING_ARTIFACT"
+    fi
+  fi
+
   if [ "$AUTO_SCENARIO" = true ]; then
     if [ "$FORCE" = true ] || [ ! -f "$SCENARIO_OUTPUT" ]; then
       echo "  Generating scenario via AI..."
@@ -468,6 +530,7 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ] && [ "$FROM_STEP" -le 3 ];
       [ -f "$TRANSCRIPT" ] && SCENARIO_ARGS+=(--transcript "$TRANSCRIPT")
       [ -f "$SCENES" ] && SCENARIO_ARGS+=(--scenes "$SCENES")
       [ -f "$SILENCES" ] && SCENARIO_ARGS+=(--silences "$SILENCES")
+      [ -n "$CLIP_RANKING_ARTIFACT" ] && [ -f "$CLIP_RANKING_ARTIFACT" ] && SCENARIO_ARGS+=(--clip-ranking "$CLIP_RANKING_ARTIFACT")
       [ -f "$NORMALIZED" ] && SCENARIO_ARGS+=(--video "$NORMALIZED")
 
       python3 "$SCRIPTS_DIR/generate_scenario.py" --engine cli "${SCENARIO_ARGS[@]}"
@@ -486,7 +549,7 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ] && [ "$FROM_STEP" -le 3 ];
     echo "  Generating edit script via AI..."
     if [ -z "$VOICEOVER_MANIFEST" ] && [ -n "$TTS_PROVIDER" ]; then
       if [ "$FORCE" = true ] || [ ! -f "$DEFAULT_VOICEOVER_MANIFEST" ]; then
-        echo "  [3a] Generating voiceover via TTS provider: $TTS_PROVIDER"
+        echo "  [3b] Generating voiceover via TTS provider: $TTS_PROVIDER"
         rm -rf "$(dirname "$DEFAULT_VOICEOVER_MANIFEST")"
         TTS_ARGS=(
           --scenario "$SCENARIO_FILE"
@@ -499,14 +562,14 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ] && [ "$FROM_STEP" -le 3 ];
         )
         [ -n "$TTS_INSTRUCTIONS" ] && TTS_ARGS+=(--instructions "$TTS_INSTRUCTIONS")
         if python3 "$SCRIPTS_DIR/generate_voiceover.py" "${TTS_ARGS[@]}"; then
-          echo "  [3a] [OK] Voiceover manifest: $DEFAULT_VOICEOVER_MANIFEST"
+          echo "  [3b] [OK] Voiceover manifest: $DEFAULT_VOICEOVER_MANIFEST"
           VOICEOVER_MANIFEST="$DEFAULT_VOICEOVER_MANIFEST"
         else
-          echo "  [3a] [WARN] TTS generation failed; continuing without voiceover"
+          echo "  [3b] [WARN] TTS generation failed; continuing without voiceover"
           VOICEOVER_MANIFEST=""
         fi
       else
-        echo "  [3a] [CACHE] Voiceover manifest exists: $DEFAULT_VOICEOVER_MANIFEST"
+        echo "  [3b] [CACHE] Voiceover manifest exists: $DEFAULT_VOICEOVER_MANIFEST"
         VOICEOVER_MANIFEST="$DEFAULT_VOICEOVER_MANIFEST"
       fi
     fi
@@ -517,6 +580,7 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ] && [ "$FROM_STEP" -le 3 ];
     [ -f "$TRANSCRIPT" ] && GENERATE_ARGS+=(--transcript "$TRANSCRIPT")
     [ -f "$SCENES" ] && GENERATE_ARGS+=(--scenes "$SCENES")
     [ -f "$SILENCES" ] && GENERATE_ARGS+=(--silences "$SILENCES")
+    [ -n "$CLIP_RANKING_ARTIFACT" ] && [ -f "$CLIP_RANKING_ARTIFACT" ] && GENERATE_ARGS+=(--clip-ranking "$CLIP_RANKING_ARTIFACT")
     [ -f "$NORMALIZED" ] && GENERATE_ARGS+=(--video "$NORMALIZED")
     [ -n "$VOICEOVER_MANIFEST" ] && [ -f "$VOICEOVER_MANIFEST" ] && GENERATE_ARGS+=(--voiceover-manifest "$VOICEOVER_MANIFEST")
 

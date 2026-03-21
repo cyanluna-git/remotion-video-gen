@@ -17,6 +17,7 @@ try:
         extract_transcript_segments,
         get_video_duration,
         load_json_file,
+        summarize_clip_ranking,
         validate_generated_scenario,
     )
 except ModuleNotFoundError:
@@ -29,6 +30,7 @@ except ModuleNotFoundError:
         extract_transcript_segments,
         get_video_duration,
         load_json_file,
+        summarize_clip_ranking,
         validate_generated_scenario,
     )
 
@@ -40,6 +42,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--transcript", type=Path, default=None, help="Whisper transcript JSON file")
     parser.add_argument("--scenes", type=Path, default=None, help="Scene detection JSON file")
     parser.add_argument("--silences", type=Path, default=None, help="Silence detection JSON file")
+    parser.add_argument("--clip-ranking", type=Path, default=None, help="Clip ranking JSON artifact")
     parser.add_argument("--video", type=Path, default=None, help="Video file for duration and title fallback")
     parser.add_argument("--title", default=None, help="Optional title hint")
     parser.add_argument("--language", default=None, help="Optional language hint")
@@ -73,6 +76,7 @@ def main(argv: list[str] | None = None) -> None:
     transcript = load_json_file(args.transcript, "transcript") if args.transcript else None
     scenes = load_json_file(args.scenes, "scenes") if args.scenes else None
     silences = load_json_file(args.silences, "silences") if args.silences else None
+    clip_ranking = load_json_file(args.clip_ranking, "clip ranking") if args.clip_ranking else None
     video_duration = get_video_duration(args.video) if args.video else None
 
     source_name = args.source_name or (args.video.name if args.video else None)
@@ -86,6 +90,7 @@ def main(argv: list[str] | None = None) -> None:
         transcript_segments=transcript_segments,
         scenes=scenes if isinstance(scenes, list) else None,
         silences=silences if isinstance(silences, list) else None,
+        clip_ranking=clip_ranking if isinstance(clip_ranking, dict) else None,
         video_duration=video_duration,
     )
     write_text_artifact(args.prompt_output, prompt)

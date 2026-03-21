@@ -108,6 +108,40 @@ def extract_transcript_segments(transcript: dict | list | None, limit: int = 120
     return result
 
 
+def summarize_clip_ranking(
+    clip_ranking: dict[str, Any] | None,
+    *,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """Return a compact ranking summary suitable for prompt context."""
+    if not isinstance(clip_ranking, dict):
+        return []
+    candidates = clip_ranking.get("candidates")
+    if not isinstance(candidates, list):
+        return []
+
+    summary: list[dict[str, Any]] = []
+    for candidate in candidates[:limit]:
+        if not isinstance(candidate, dict):
+            continue
+        compact = {
+            "id": candidate.get("id"),
+            "rank": candidate.get("rank"),
+            "startSec": candidate.get("startSec"),
+            "endSec": candidate.get("endSec"),
+            "score": candidate.get("score"),
+            "sourceSignals": candidate.get("sourceSignals", []),
+        }
+        transcript_excerpt = str(candidate.get("transcriptExcerpt") or "").strip()
+        rationale = str(candidate.get("rationale") or "").strip()
+        if transcript_excerpt:
+            compact["transcriptExcerpt"] = transcript_excerpt
+        if rationale:
+            compact["rationale"] = rationale
+        summary.append(compact)
+    return summary
+
+
 def build_scenario_prompt(
     *,
     title_hint: str,
@@ -115,6 +149,7 @@ def build_scenario_prompt(
     transcript_segments: list[dict],
     scenes: list | None,
     silences: list | None,
+    clip_ranking: dict[str, Any] | None,
     video_duration: float | None,
 ) -> str:
     """Build the prompt for canonical scenario generation."""
@@ -167,6 +202,7 @@ def build_scenario_prompt(
     parts.append("- Every section needs a concise title and a description focused on viewer-visible actions.")
     parts.append("- Emit canonical `timeRange.startSec/endSec`; do not emit legacy flat `startSec/endSec` fields.")
     parts.append("- Keep `options.correctCaptions` enabled.")
+    parts.append("- When clip-ranking hints are present, prefer top-ranked windows as anchors for representative, high-signal moments without forcing a one-section-per-window mapping.")
 
     if video_duration is not None:
         parts.append(f"- The source video duration is {video_duration:.3f} seconds. Do not exceed it.")
@@ -182,6 +218,11 @@ def build_scenario_prompt(
     if silences:
         parts.append(f"\n## Silence Segments ({len(silences)} detected)\n")
         parts.append(json.dumps(silences, indent=2, ensure_ascii=False))
+
+    clip_ranking_summary = summarize_clip_ranking(clip_ranking)
+    if clip_ranking_summary:
+        parts.append(f"\n## Clip Ranking Hints ({len(clip_ranking_summary)} candidates)\n")
+        parts.append(json.dumps(clip_ranking_summary, indent=2, ensure_ascii=False))
 
     return "\n".join(parts)
 

@@ -36,6 +36,8 @@ remotion-video-gen/
 │   ├── detect_silence.py
 │   ├── generate_scenario.py
 │   ├── generate_edit.py
+│   ├── generate_clip_ranking.py
+│   ├── clip_ranking.py
 │   ├── generate_voiceover.py
 │   ├── tts_providers.py
 │   └── convert_captions.py
@@ -142,6 +144,7 @@ python scripts/detect_silence.py input.mp4
 # .env (gitignored)
 ANTHROPIC_API_KEY=sk-ant-...    # Claude API key for edit script generation
 OPENAI_API_KEY=sk-...           # Optional OpenAI TTS provider key
+CLIP_RANKING_PROVIDER=heuristic # Optional: heuristic | none
 TTS_PROVIDER=                   # Optional: openai | mock
 TTS_MODEL=gpt-4o-mini-tts       # Default OpenAI TTS model
 TTS_VOICE=alloy                 # Default OpenAI voice
