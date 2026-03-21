@@ -242,6 +242,63 @@ class BackendApiE2ETest(unittest.TestCase):
         self.assertTrue(payload["hasVisionQa"])
         self.assertEqual(payload["qaReviewMethods"], ["heuristic", "vision"])
 
+    def test_artifact_retrieval_surfaces_clip_ranking_summary(self) -> None:
+        response = self.client.post(
+            "/api/jobs",
+            files={"video": ("demo.mp4", b"fake-video", "video/mp4")},
+            data={
+                "scenario": json.dumps(
+                    {
+                        "title": "Ranking Job",
+                        "sections": [
+                            {
+                                "title": "Intro",
+                                "description": "Review ranking",
+                                "timeRange": {"startSec": 0, "endSec": 5},
+                            }
+                        ],
+                    }
+                )
+            },
+        )
+        job_id = response.json()["id"]
+        analysis_dir = self.jobs_dir / job_id / "analysis"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+        (analysis_dir / "clip-ranking.json").write_text(
+            json.dumps(
+                {
+                    "summary": {
+                        "status": "ready",
+                        "candidateCount": 2,
+                        "topCandidateIds": ["scene-01", "scene-02"],
+                    },
+                    "candidates": [
+                        {
+                            "id": "scene-01",
+                            "rank": 1,
+                            "startSec": 0,
+                            "endSec": 4,
+                            "score": 0.8,
+                            "sourceSignals": ["scenes"],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        detail = self.client.get(f"/api/jobs/{job_id}")
+        self.assertEqual(detail.status_code, 200)
+        payload = detail.json()
+        self.assertTrue(payload["hasClipRanking"])
+        self.assertEqual(payload["clipRankingCandidateCount"], 2)
+        self.assertEqual(payload["clipRankingTopCandidateIds"], ["scene-01", "scene-02"])
+        self.assertIn("clipRanking", payload)
+
+        summary = self.client.get("/api/jobs").json()[0]
+        self.assertTrue(summary["hasClipRanking"])
+        self.assertEqual(summary["clipRankingCandidateCount"], 2)
+
 
 class PipelineFlowE2ETest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:

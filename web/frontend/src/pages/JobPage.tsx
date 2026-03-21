@@ -14,6 +14,8 @@ export function JobPage(): React.JSX.Element {
   const [logOpen, setLogOpen] = useState(false);
   const [scenarioOpen, setScenarioOpen] = useState(false);
   const [qaOpen, setQaOpen] = useState(false);
+  const [voiceoverOpen, setVoiceoverOpen] = useState(false);
+  const [clipRankingOpen, setClipRankingOpen] = useState(false);
   const [editJson, setEditJson] = useState<Record<string, unknown> | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [rerendering, setRerendering] = useState(false);
@@ -150,9 +152,19 @@ export function JobPage(): React.JSX.Element {
                   Voiceover tracks: {job.voiceoverTrackCount ?? 0}
                 </span>
               )}
+              {job.ttsStatus && job.ttsStatus !== 'skipped' && !job.hasVoiceover && (
+                <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">
+                  TTS {job.ttsStatus}
+                </span>
+              )}
               {!job.hasVoiceover && job.hasVoiceoverArtifacts && (
                 <span className="inline-flex items-center rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
                   Narration assets detected
+                </span>
+              )}
+              {job.hasClipRanking && (
+                <span className="inline-flex items-center rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700">
+                  Ranked clips: {job.clipRankingCandidateCount ?? 0}
                 </span>
               )}
               {job.hasQa && (
@@ -164,6 +176,11 @@ export function JobPage(): React.JSX.Element {
                       : 'bg-amber-50 text-amber-700'
                 }`}>
                   QA {job.qaStatus ?? 'unknown'}
+                </span>
+              )}
+              {job.hasVisionQa && (
+                <span className="inline-flex items-center rounded-full bg-purple-50 px-2.5 py-1 text-xs font-medium text-purple-700">
+                  Vision QA
                 </span>
               )}
             </div>
@@ -187,6 +204,40 @@ export function JobPage(): React.JSX.Element {
             Completed in {formatDuration(job.duration)}
           </p>
         )}
+
+        {(job.ttsStatus && job.ttsStatus !== 'skipped') || job.hasClipRanking || job.hasQa ? (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <ArtifactSummaryCard
+              title="Narration"
+              tone={job.ttsStatus === 'failed' ? 'warn' : 'good'}
+              lines={[
+                `Stage: ${job.ttsStatus ?? 'skipped'}`,
+                `Tracks: ${job.ttsTrackCount ?? job.voiceoverTrackCount ?? 0}`,
+                job.ttsProvider ? `Provider: ${job.ttsProvider}` : null,
+              ]}
+            />
+            <ArtifactSummaryCard
+              title="Clip Ranking"
+              tone={job.hasClipRanking ? 'info' : 'neutral'}
+              lines={[
+                `Artifact: ${job.hasClipRanking ? 'ready' : 'not available'}`,
+                `Candidates: ${job.clipRankingCandidateCount ?? 0}`,
+                job.clipRankingTopCandidateIds && job.clipRankingTopCandidateIds.length > 0
+                  ? `Top IDs: ${job.clipRankingTopCandidateIds.join(', ')}`
+                  : null,
+              ]}
+            />
+            <ArtifactSummaryCard
+              title="QA Review"
+              tone={job.qaStatus === 'fail' ? 'warn' : job.hasVisionQa ? 'info' : 'neutral'}
+              lines={[
+                `Status: ${job.qaStatus ?? 'not available'}`,
+                `Methods: ${job.qaReviewMethods && job.qaReviewMethods.length > 0 ? job.qaReviewMethods.join(', ') : 'heuristic'}`,
+                `Warnings: ${job.qaWarningCount ?? 0}`,
+              ]}
+            />
+          </div>
+        ) : null}
 
         {/* Log Viewer */}
         <LogViewer log={job.log} isOpen={logOpen} onToggle={() => setLogOpen((v) => !v)} />
@@ -221,11 +272,72 @@ export function JobPage(): React.JSX.Element {
         )}
 
         {job.hasVoiceoverArtifacts && job.voiceoverArtifacts && job.voiceoverArtifacts.length > 0 && (
-          <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
-            <p className="text-sm font-medium text-gray-700">Narration Artifacts</p>
-            <p className="mt-1 text-sm text-gray-500">
-              {job.voiceoverArtifacts.join(', ')}
-            </p>
+          <div className="border border-gray-200 rounded-lg overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setVoiceoverOpen((prev) => !prev)}
+              className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              <span>Narration Artifacts</span>
+              <svg
+                className={`w-4 h-4 transition-transform ${voiceoverOpen ? 'rotate-180' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {voiceoverOpen && (
+              <div className="border-t border-gray-200 bg-gray-50 px-4 py-3 space-y-3">
+                <p className="text-sm text-gray-500">
+                  {job.voiceoverArtifacts.join(', ')}
+                </p>
+                {job.voiceoverManifest && (
+                  <pre
+                    className="text-sm text-gray-300 font-mono whitespace-pre-wrap break-words overflow-y-auto rounded-lg"
+                    style={{ backgroundColor: '#1a1a2e', maxHeight: '320px', padding: '12px' }}
+                  >
+                    {JSON.stringify(job.voiceoverManifest, null, 2)}
+                  </pre>
+                )}
+                {job.ttsError && (
+                  <p className="text-sm text-amber-700">
+                    {job.ttsError}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {job.hasClipRanking && job.clipRanking && (
+          <div className="border border-gray-200 rounded-lg overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setClipRankingOpen((prev) => !prev)}
+              className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              <span>Clip Ranking JSON</span>
+              <svg
+                className={`w-4 h-4 transition-transform ${clipRankingOpen ? 'rotate-180' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {clipRankingOpen && (
+              <pre
+                className="px-4 py-3 text-sm text-gray-300 font-mono whitespace-pre-wrap break-words overflow-y-auto border-t border-gray-200"
+                style={{ backgroundColor: '#1a1a2e', maxHeight: '320px' }}
+              >
+                {JSON.stringify(job.clipRanking, null, 2)}
+              </pre>
+            )}
           </div>
         )}
 
@@ -368,6 +480,36 @@ function StatusBadge({ status }: { status: string }): React.JSX.Element {
     <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${styles[status] ?? 'bg-gray-100 text-gray-800'}`}>
       {status}
     </span>
+  );
+}
+
+function ArtifactSummaryCard({
+  title,
+  lines,
+  tone,
+}: {
+  title: string;
+  lines: Array<string | null | undefined>;
+  tone: 'neutral' | 'good' | 'info' | 'warn';
+}): React.JSX.Element {
+  const tones: Record<typeof tone, string> = {
+    neutral: 'border-gray-200 bg-gray-50',
+    good: 'border-emerald-200 bg-emerald-50',
+    info: 'border-indigo-200 bg-indigo-50',
+    warn: 'border-amber-200 bg-amber-50',
+  };
+
+  return (
+    <div className={`rounded-lg border px-4 py-3 ${tones[tone]}`}>
+      <p className="text-sm font-medium text-gray-700">{title}</p>
+      <div className="mt-2 space-y-1">
+        {lines.filter(Boolean).map((line) => (
+          <p key={line} className="text-sm text-gray-500">
+            {line}
+          </p>
+        ))}
+      </div>
+    </div>
   );
 }
 

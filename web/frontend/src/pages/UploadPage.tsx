@@ -476,8 +476,13 @@ export function UploadPage(): React.JSX.Element {
           </div>
           ) : (
             <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-5 text-sm text-gray-600">
-              AI-assisted mode will infer section titles, descriptions, and time ranges from transcript, scene, and silence analysis.
-              Language and title above are optional hints only.
+              <p>
+                AI-assisted mode will infer section titles, descriptions, and time ranges from transcript, scene, silence, and clip-ranking analysis.
+                Language and title above are optional hints only.
+              </p>
+              <p className="mt-2 text-xs text-gray-500">
+                Narration generation and vision QA remain server-managed stages when those providers are enabled.
+              </p>
             </div>
           )}
 

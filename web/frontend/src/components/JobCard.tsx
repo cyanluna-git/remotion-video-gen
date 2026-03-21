@@ -151,6 +151,26 @@ export function JobCard({ job, onDelete }: JobCardProps): React.JSX.Element {
           )}
         </div>
 
+        {(job.ttsStatus && job.ttsStatus !== 'skipped') || job.hasClipRanking || job.hasVisionQa ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {job.ttsStatus && job.ttsStatus !== 'skipped' && (
+              <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+                TTS {job.ttsTrackCount ?? 0}
+              </span>
+            )}
+            {job.hasClipRanking && (
+              <span className="inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700">
+                Ranked {job.clipRankingCandidateCount ?? 0}
+              </span>
+            )}
+            {job.hasVisionQa && (
+              <span className="inline-flex items-center rounded-full bg-purple-50 px-2 py-0.5 text-[11px] font-medium text-purple-700">
+                Vision QA
+              </span>
+            )}
+          </div>
+        ) : null}
+
         <p className="text-xs text-gray-400">
           {formatRelativeTime(job.createdAt)}
         </p>

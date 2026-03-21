@@ -157,6 +157,44 @@ def qa_summary(job_dir: Path, qa_data: dict | None) -> dict:
     return summary
 
 
+def clip_ranking_summary(job_dir: Path) -> dict:
+    """Return clip-ranking artifact summary for API surfaces."""
+    ranking_path = job_dir / "analysis" / "clip-ranking.json"
+    summary = {
+        "hasClipRanking": False,
+        "clipRankingCandidateCount": 0,
+        "clipRankingTopCandidateIds": [],
+    }
+    if not ranking_path.exists():
+        return summary
+
+    try:
+        with ranking_path.open("r", encoding="utf-8") as f:
+            ranking = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return summary
+
+    artifact_summary = ranking.get("summary", {})
+    summary["hasClipRanking"] = True
+    summary["clipRankingCandidateCount"] = int(artifact_summary.get("candidateCount", 0))
+    top_ids = artifact_summary.get("topCandidateIds", [])
+    if isinstance(top_ids, list):
+        summary["clipRankingTopCandidateIds"] = [str(item) for item in top_ids[:3]]
+    return summary
+
+
+def load_optional_json(path: Path) -> dict | None:
+    """Load a JSON artifact when present and valid."""
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return payload if isinstance(payload, dict) else None
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 def job_summary(job_dir: Path) -> Optional[dict]:
     """Build a lightweight summary dict from a job directory."""
     meta_path = job_dir / "meta.json"
@@ -166,6 +204,10 @@ def job_summary(job_dir: Path) -> Optional[dict]:
         meta = load_meta(meta_path)
     except (json.JSONDecodeError, OSError):
         return None
+    qa_data = load_optional_json(job_dir / "output" / "qa.json")
+    qa_meta = qa_summary(job_dir, qa_data)
+    tts_meta = tts_summary(job_dir)
+    clip_meta = clip_ranking_summary(job_dir)
     return {
         "id": meta.get("id", job_dir.name),
         "title": meta.get("title", ""),
@@ -178,6 +220,12 @@ def job_summary(job_dir: Path) -> Optional[dict]:
         "completedAt": meta.get("completedAt"),
         "duration": meta.get("duration"),
         "fileSize": meta.get("fileSize", 0),
+        "ttsStatus": tts_meta.get("ttsStatus"),
+        "ttsTrackCount": tts_meta.get("ttsTrackCount", 0),
+        "hasVisionQa": qa_meta.get("hasVisionQa", False),
+        "qaReviewMethods": qa_meta.get("qaReviewMethods", []),
+        "hasClipRanking": clip_meta.get("hasClipRanking", False),
+        "clipRankingCandidateCount": clip_meta.get("clipRankingCandidateCount", 0),
     }
 
 
@@ -484,6 +532,7 @@ async def get_job(job_id: str) -> dict:
     meta["hasVoiceover"] = False
     meta["voiceoverTrackCount"] = 0
     meta.update(tts_summary(job_dir))
+    meta.update(clip_ranking_summary(job_dir))
 
     if edit_path.exists():
         try:
@@ -507,6 +556,14 @@ async def get_job(job_id: str) -> dict:
         meta["voiceoverArtifacts"] = sorted(
             path.name for path in voiceover_dir.iterdir() if path.is_file()
         )
+        manifest_data = load_optional_json(voiceover_dir / "manifest.json")
+        if manifest_data is not None:
+            meta["voiceoverManifest"] = manifest_data
+
+    clip_ranking_path = job_dir / "analysis" / "clip-ranking.json"
+    clip_ranking_data = load_optional_json(clip_ranking_path)
+    if clip_ranking_data is not None:
+        meta["clipRanking"] = clip_ranking_data
 
     if qa_path.exists():
         try:

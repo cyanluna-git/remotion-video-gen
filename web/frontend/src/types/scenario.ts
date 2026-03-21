@@ -47,6 +47,12 @@ export interface JobSummary {
   completedAt: string | null;
   duration: number | null;
   fileSize: number;
+  ttsStatus?: string | null;
+  ttsTrackCount?: number;
+  hasVisionQa?: boolean;
+  qaReviewMethods?: string[];
+  hasClipRanking?: boolean;
+  clipRankingCandidateCount?: number;
 }
 
 export interface Job {
@@ -73,6 +79,19 @@ export interface Job {
   hasVoiceoverArtifacts?: boolean;
   voiceoverTrackCount?: number;
   voiceoverArtifacts?: string[];
+  voiceoverManifest?: Record<string, unknown>;
+  ttsStatus?: string | null;
+  ttsTrackCount?: number;
+  ttsProvider?: string | null;
+  ttsModel?: string | null;
+  ttsVoice?: string | null;
+  ttsError?: string | null;
+  hasClipRanking?: boolean;
+  clipRankingCandidateCount?: number;
+  clipRankingTopCandidateIds?: string[];
+  clipRanking?: Record<string, unknown>;
+  qaReviewMethods?: string[];
+  hasVisionQa?: boolean;
   titleHint?: string | null;
   languageHint?: string | null;
   scenario?: ScenarioForm;
