@@ -17,6 +17,7 @@ export function JobPage(): React.JSX.Element {
   const [editJson, setEditJson] = useState<Record<string, unknown> | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [rerendering, setRerendering] = useState(false);
+  const jobStatus = job?.status;
 
   const fetchJob = useCallback(async () => {
     if (!id) return;
@@ -41,11 +42,11 @@ export function JobPage(): React.JSX.Element {
   }, [fetchJob]);
 
   useEffect(() => {
-    if (!job || job.status === 'done' || job.status === 'failed') return;
+    if (!jobStatus || jobStatus === 'done' || jobStatus === 'failed') return;
 
     const interval = setInterval(fetchJob, 2000);
     return () => clearInterval(interval);
-  }, [job?.status, fetchJob]);
+  }, [jobStatus, fetchJob]);
 
   const handleLoadEditJson = useCallback(async () => {
     if (!id || editJson) {

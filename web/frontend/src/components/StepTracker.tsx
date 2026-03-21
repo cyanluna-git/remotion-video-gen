@@ -81,7 +81,12 @@ export function StepTracker({ currentStep, status }: StepTrackerProps): React.JS
 
         return (
           <div key={step.num} className="flex items-start flex-1 min-w-0">
-            <div className="flex flex-col items-center">
+            <div
+              className="flex flex-col items-center"
+              data-testid={`step-${step.num}`}
+              data-step-state={state}
+              aria-label={`Step ${step.num}: ${step.label} (${state})`}
+            >
               <StepCircle state={state} />
               <span className="mt-2 text-xs font-medium text-gray-600 text-center whitespace-nowrap">
                 {step.label}
