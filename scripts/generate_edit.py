@@ -14,6 +14,7 @@ Usage:
       --transcript .work/transcript.json \\
       --scenes .work/scenes.json \\
       --silences .work/silences.json \\
+      --voiceover-manifest jobs/<id>/voiceover/manifest.json \\
       --video .work/normalized.mp4 \\
       --output .work/edit.json
 """
@@ -72,6 +73,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Normalized video file for duration detection (optional)",
     )
     parser.add_argument(
+        "--voiceover-manifest",
+        type=Path,
+        default=None,
+        help="Provider-agnostic voiceover manifest JSON file (optional)",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         required=True,
@@ -112,6 +119,7 @@ def build_prompt(
     transcript_segments: list[dict],
     scenes: list | None,
     silences: list | None,
+    voiceover_manifest: dict | list | None,
     video_duration: float | None,
 ) -> str:
     """Construct the full prompt from all available inputs."""
@@ -144,6 +152,10 @@ def build_prompt(
         parts.append(f"\n## Silence Segments ({len(silences)} detected)\n")
         parts.append(json.dumps(silences, indent=2, ensure_ascii=False))
 
+    if voiceover_manifest:
+        parts.append("\n## Voiceover Manifest\n")
+        parts.append(json.dumps(voiceover_manifest, indent=2, ensure_ascii=False))
+
     silence_threshold = scenario.get("options", {}).get("silenceThreshold", 3.0)
     style = scenario.get("style", {})
 
@@ -153,6 +165,7 @@ def build_prompt(
     parts.append("- Insert a title-card entry between sections using the section's title.")
     parts.append("- Place caption overlays from the Whisper transcript at their correct timestamps within the clip.")
     parts.append('- Correct Whisper transcript errors for technical terms (e.g. "모드버스"→"Modbus").')
+    parts.append('- Caption overlays may include `captionClass`: use `subtitle` by default, `announcement` for key callouts, and `technical-term` for important product or engineering terms.')
 
     transition = style.get("transition", "fade")
     transition_dur = style.get("transitionDuration", 0.5)
@@ -166,7 +179,10 @@ def build_prompt(
     parts.append("- The output JSON must include: version (\"1.0\"), fps (30), resolution ({width:1920,height:1080}), sources, timeline.")
     parts.append("- Each title-card must have: type, text, durationSec, background.")
     parts.append("- Each clip must have: type, source, startSec, endSec. Optionally: overlays, transition.")
-    parts.append("- Each overlay must have: type, startSec, durationSec. For caption: text, position. For highlight: region, color.")
+    parts.append("- Each overlay must have: type, startSec, durationSec. For caption: text, position, optional captionClass. For highlight: region, color.")
+    parts.append("- audio.originalAudio.volume may control source-video audio volume. audio.backgroundMusic is optional.")
+    parts.append("- audio.voiceover may use either legacy `{src, volume}` or `{tracks: [...], mix: {...}}`.")
+    parts.append("- When a voiceover manifest is provided, reference those assets in `audio.voiceover.tracks` using their `src` values and align `startSec` with the relevant timeline moments.")
 
     return "\n".join(parts)
 
@@ -243,6 +259,11 @@ def main(argv: list[str] | None = None) -> None:
     transcript = load_json_file(args.transcript, "transcript") if args.transcript else None
     scenes = load_json_file(args.scenes, "scenes") if args.scenes else None
     silences = load_json_file(args.silences, "silences") if args.silences else None
+    voiceover_manifest = (
+        load_json_file(args.voiceover_manifest, "voiceover manifest")
+        if args.voiceover_manifest
+        else None
+    )
 
     video_duration = get_video_duration(args.video) if args.video else None
 
@@ -253,6 +274,7 @@ def main(argv: list[str] | None = None) -> None:
         transcript_segments=transcript_segments,
         scenes=scenes if isinstance(scenes, list) else None,
         silences=silences if isinstance(silences, list) else None,
+        voiceover_manifest=voiceover_manifest,
         video_duration=video_duration,
     )
 

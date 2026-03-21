@@ -24,7 +24,8 @@
           "text": "First segment — introduction",
           "startSec": 1,
           "durationSec": 3,
-          "position": "bottom"
+          "position": "bottom",
+          "captionClass": "announcement"
         }
       ]
     },
@@ -39,7 +40,8 @@
           "text": "Second segment — demo",
           "startSec": 0.5,
           "durationSec": 3,
-          "position": "bottom"
+          "position": "bottom",
+          "captionClass": "technical-term"
         },
         {
           "type": "highlight",
@@ -50,5 +52,24 @@
         }
       ]
     }
-  ]
+  ],
+  "audio": {
+    "originalAudio": {
+      "volume": 0.9
+    },
+    "voiceover": {
+      "tracks": [
+        {
+          "id": "narration-intro",
+          "src": "voiceover/demo/narration-intro.mp3",
+          "startSec": 0,
+          "volume": 1,
+          "provider": "provider-agnostic"
+        }
+      ],
+      "mix": {
+        "duckedVolume": 0.35
+      }
+    }
+  }
 }

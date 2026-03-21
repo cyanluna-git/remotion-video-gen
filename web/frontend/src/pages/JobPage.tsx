@@ -143,6 +143,16 @@ export function JobPage(): React.JSX.Element {
                   Language hint: {job.languageHint}
                 </span>
               )}
+              {job.hasVoiceover && (
+                <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">
+                  Voiceover tracks: {job.voiceoverTrackCount ?? 0}
+                </span>
+              )}
+              {!job.hasVoiceover && job.hasVoiceoverArtifacts && (
+                <span className="inline-flex items-center rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
+                  Narration assets detected
+                </span>
+              )}
             </div>
           </div>
           <StatusBadge status={job.status} />
@@ -194,6 +204,15 @@ export function JobPage(): React.JSX.Element {
                 {JSON.stringify(job.scenario, null, 2)}
               </pre>
             )}
+          </div>
+        )}
+
+        {job.hasVoiceoverArtifacts && job.voiceoverArtifacts && job.voiceoverArtifacts.length > 0 && (
+          <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+            <p className="text-sm font-medium text-gray-700">Narration Artifacts</p>
+            <p className="mt-1 text-sm text-gray-500">
+              {job.voiceoverArtifacts.join(', ')}
+            </p>
           </div>
         )}
 

@@ -72,6 +72,8 @@ print_usage() {
   echo "  --scenario-error-output PATH"
   echo "                     Where scenario-generation errors should be saved in auto mode"
   echo "  --edit-output PATH Where generated edit.json should be saved (default: .work/edit.json)"
+  echo "  --voiceover-manifest PATH"
+  echo "                     Optional provider-agnostic narration manifest to feed into edit generation"
   echo "  --skip-analysis    Skip Step 2 (use cached .work/ files)"
   echo "  --skip-ai          Skip Step 3 (use existing edit.json)"
   echo "  --edit-only        Only run Step 4 (Remotion render)"
@@ -96,6 +98,7 @@ SCENARIO_OUTPUT=""
 PROMPT_OUTPUT=""
 SCENARIO_ERROR_OUTPUT=""
 EDIT_OUTPUT=""
+VOICEOVER_MANIFEST=""
 SKIP_ANALYSIS=false
 SKIP_AI=false
 EDIT_ONLY=false
@@ -115,6 +118,7 @@ while [ $# -gt 0 ]; do
     --prompt-output) PROMPT_OUTPUT="$2"; shift ;;
     --scenario-error-output) SCENARIO_ERROR_OUTPUT="$2"; shift ;;
     --edit-output) EDIT_OUTPUT="$2"; shift ;;
+    --voiceover-manifest) VOICEOVER_MANIFEST="$2"; shift ;;
     --skip-analysis) SKIP_ANALYSIS=true ;;
     --skip-ai) SKIP_AI=true ;;
     --edit-only) EDIT_ONLY=true ;;
@@ -441,6 +445,10 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ] && [ "$FROM_STEP" -le 3 ];
     STEP_STATUS[2]="CACHE"
   else
     echo "  Generating edit script via AI..."
+    if [ -z "$VOICEOVER_MANIFEST" ]; then
+      DEFAULT_VOICEOVER_MANIFEST="$(dirname "$AI_EDIT")/voiceover/manifest.json"
+      [ -f "$DEFAULT_VOICEOVER_MANIFEST" ] && VOICEOVER_MANIFEST="$DEFAULT_VOICEOVER_MANIFEST"
+    fi
     GENERATE_ARGS=(
       --scenario "$SCENARIO_FILE"
       --output "$AI_EDIT"
@@ -449,6 +457,7 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ] && [ "$FROM_STEP" -le 3 ];
     [ -f "$SCENES" ] && GENERATE_ARGS+=(--scenes "$SCENES")
     [ -f "$SILENCES" ] && GENERATE_ARGS+=(--silences "$SILENCES")
     [ -f "$NORMALIZED" ] && GENERATE_ARGS+=(--video "$NORMALIZED")
+    [ -n "$VOICEOVER_MANIFEST" ] && [ -f "$VOICEOVER_MANIFEST" ] && GENERATE_ARGS+=(--voiceover-manifest "$VOICEOVER_MANIFEST")
 
     python3 "$SCRIPTS_DIR/generate_edit.py" --engine cli "${GENERATE_ARGS[@]}"
     echo "  [OK] AI edit script: $AI_EDIT"
@@ -498,20 +507,12 @@ if [ "$FROM_STEP" -le 4 ]; then
   fi
 
   # Wrap edit.json in {script: ...} for Remotion component props
-  EDIT_SOURCE="${PROPS_FILE:-$EDIT_JSON}"
+  EDIT_SOURCE="${PROPS_FILE:-$MANUAL_INPUT}"
   WRAPPED_PROPS="$WORK_DIR/remotion-props.json"
-  python3 -c "
-import json, sys
-with open(sys.argv[1]) as f:
-    edit = json.load(f)
-# If already wrapped, use as-is
-if 'script' in edit and 'timeline' in edit.get('script', {}):
-    wrapped = edit
-else:
-    wrapped = {'script': edit}
-with open(sys.argv[2], 'w') as f:
-    json.dump(wrapped, f)
-" "$EDIT_SOURCE" "$WRAPPED_PROPS"
+  python3 "$SCRIPTS_DIR/prepare_render_props.py" \
+    --edit-source "$EDIT_SOURCE" \
+    --output "$WRAPPED_PROPS" \
+    --public-dir "$REMOTION_DIR/public"
 
   echo "  Props file: $EDIT_SOURCE -> wrapped"
   echo "  Rendering with Remotion (concurrency=$CONCURRENCY)..."

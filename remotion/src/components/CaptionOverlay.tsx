@@ -5,17 +5,18 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
+import type { CaptionClass } from "../types/script";
 
 interface CaptionOverlayProps {
   text: string;
   position?: "top" | "bottom" | "center";
-  style?: "subtitle" | "announcement";
+  variant?: CaptionClass;
 }
 
 export const CaptionOverlay: React.FC<CaptionOverlayProps> = ({
   text,
   position = "bottom",
-  style = "subtitle",
+  variant = "subtitle",
 }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
@@ -59,31 +60,45 @@ export const CaptionOverlay: React.FC<CaptionOverlayProps> = ({
           justifyContent: "center",
         };
 
-  const isAnnouncement = style === "announcement";
-
-  const textStyle: React.CSSProperties = isAnnouncement
-    ? {
-        width: "100%",
-        backgroundColor: "rgba(0, 0, 0, 0.75)",
-        color: "#fff",
-        fontSize: 48,
-        fontWeight: 700,
-        fontFamily: "Inter, -apple-system, sans-serif",
-        textAlign: "center",
-        padding: "16px 32px",
-        lineHeight: 1.3,
-      }
-    : {
-        backgroundColor: "rgba(0, 0, 0, 0.75)",
-        color: "#fff",
-        fontSize: 36,
-        fontWeight: 600,
-        fontFamily: "Inter, -apple-system, sans-serif",
-        textAlign: "center",
-        padding: "12px 24px",
-        borderRadius: 8,
-        lineHeight: 1.3,
-      };
+  const textStyle: React.CSSProperties =
+    variant === "announcement"
+      ? {
+          width: "100%",
+          backgroundColor: "rgba(0, 0, 0, 0.75)",
+          color: "#fff",
+          fontSize: 48,
+          fontWeight: 700,
+          fontFamily: "Inter, -apple-system, sans-serif",
+          textAlign: "center",
+          padding: "16px 32px",
+          lineHeight: 1.3,
+        }
+      : variant === "technical-term"
+        ? {
+            backgroundColor: "rgba(12, 18, 44, 0.88)",
+            color: "#fef3c7",
+            fontSize: 34,
+            fontWeight: 700,
+            fontFamily: "'SF Mono', 'Roboto Mono', monospace",
+            textAlign: "center",
+            padding: "12px 24px",
+            borderRadius: 10,
+            border: "2px solid rgba(251, 191, 36, 0.65)",
+            boxShadow: "0 12px 32px rgba(15, 23, 42, 0.35)",
+            letterSpacing: "0.02em",
+            lineHeight: 1.3,
+          }
+        : {
+            backgroundColor: "rgba(0, 0, 0, 0.75)",
+            color: "#fff",
+            fontSize: 36,
+            fontWeight: 600,
+            fontFamily: "Inter, -apple-system, sans-serif",
+            textAlign: "center",
+            padding: "12px 24px",
+            borderRadius: 8,
+            lineHeight: 1.3,
+          };
 
   return (
     <AbsoluteFill

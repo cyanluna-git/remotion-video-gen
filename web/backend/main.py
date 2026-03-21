@@ -65,6 +65,26 @@ def utcnow_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+def voiceover_summary(edit: dict | None) -> tuple[bool, int]:
+    """Return whether edit JSON references voiceover and the track count."""
+    if not isinstance(edit, dict):
+        return False, 0
+
+    audio = edit.get("audio")
+    if not isinstance(audio, dict):
+        return False, 0
+
+    voiceover = audio.get("voiceover")
+    if not isinstance(voiceover, dict):
+        return False, 0
+
+    if isinstance(voiceover.get("tracks"), list):
+        return True, len(voiceover["tracks"])
+    if isinstance(voiceover.get("src"), str) and voiceover["src"].strip():
+        return True, 1
+    return False, 0
+
+
 def job_summary(job_dir: Path) -> Optional[dict]:
     """Build a lightweight summary dict from a job directory."""
     meta_path = job_dir / "meta.json"
@@ -348,6 +368,20 @@ async def get_job(job_id: str) -> dict:
     meta["hasEdit"] = edit_path.exists()
     scenario_path = job_dir / "scenario.json"
     meta["hasScenario"] = scenario_path.exists()
+    voiceover_dir = job_dir / "voiceover"
+    meta["hasVoiceoverArtifacts"] = voiceover_dir.exists()
+    meta["hasVoiceover"] = False
+    meta["voiceoverTrackCount"] = 0
+
+    if edit_path.exists():
+        try:
+            with edit_path.open("r", encoding="utf-8") as f:
+                edit_data = json.load(f)
+            has_voiceover, track_count = voiceover_summary(edit_data)
+            meta["hasVoiceover"] = has_voiceover
+            meta["voiceoverTrackCount"] = track_count
+        except (json.JSONDecodeError, OSError):
+            pass
 
     # Include scenario if available
     if scenario_path.exists():
@@ -356,6 +390,11 @@ async def get_job(job_id: str) -> dict:
                 meta["scenario"] = json.load(f)
         except (json.JSONDecodeError, OSError):
             pass
+
+    if voiceover_dir.exists():
+        meta["voiceoverArtifacts"] = sorted(
+            path.name for path in voiceover_dir.iterdir() if path.is_file()
+        )
 
     return meta
 

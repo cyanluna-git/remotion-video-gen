@@ -62,6 +62,10 @@ export interface Job {
   hasThumbnail: boolean;
   hasEdit: boolean;
   hasScenario?: boolean;
+  hasVoiceover?: boolean;
+  hasVoiceoverArtifacts?: boolean;
+  voiceoverTrackCount?: number;
+  voiceoverArtifacts?: string[];
   titleHint?: string | null;
   languageHint?: string | null;
   scenario?: ScenarioForm;

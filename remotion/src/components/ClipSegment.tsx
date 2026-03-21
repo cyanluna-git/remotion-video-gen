@@ -14,12 +14,14 @@ interface ClipSegmentProps {
   sourceStartSec: number;
   sourceEndSec: number;
   overlays?: Overlay[];
+  volume?: number;
 }
 
 export const ClipSegment: React.FC<ClipSegmentProps> = ({
   src,
   sourceStartSec,
   overlays,
+  volume,
 }) => {
   const { fps } = useVideoConfig();
 
@@ -27,7 +29,8 @@ export const ClipSegment: React.FC<ClipSegmentProps> = ({
     <AbsoluteFill>
       <OffthreadVideo
         src={src}
-        startFrom={Math.round(sourceStartSec * 30)}
+        startFrom={Math.round(sourceStartSec * fps)}
+        volume={volume ?? 1}
         style={{ width: "100%", height: "100%" }}
       />
       {overlays?.map((overlay, index) => {
@@ -58,6 +61,7 @@ const OverlayRenderer: React.FC<OverlayRendererProps> = ({ overlay }) => {
       <CaptionOverlay
         text={overlay.text}
         position={overlay.position ?? "bottom"}
+        variant={overlay.captionClass ?? "subtitle"}
       />
     );
   }
