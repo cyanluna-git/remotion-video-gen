@@ -13,6 +13,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import ssl
+
+# Workaround for SSL certificate issues during model download
+ssl._create_default_https_context = ssl._create_unverified_context
 import shutil
 import subprocess
 import sys
