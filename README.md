@@ -1,5 +1,12 @@
 # Remotion Video Gen
 
+[![Status](https://img.shields.io/badge/status-active-0f766e)](https://github.com/cyanluna-git/remotion-video-gen)
+[![Python](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Node.js](https://img.shields.io/badge/node-20%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Remotion](https://img.shields.io/badge/video-Remotion-0B84F3)](https://www.remotion.dev/)
+[![Frontend](https://img.shields.io/badge/frontend-React%20%2B%20Vite-20232A?logo=react&logoColor=61DAFB)](https://react.dev/)
+[![Backend](https://img.shields.io/badge/backend-FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+
 Screen recording in, AI-assisted edit pipeline out.
 
 This repository generates edited videos from screen recordings using a staged pipeline built with Remotion, Python analysis scripts, ffmpeg, Whisper, Claude, and optional multimodal components such as TTS narration, clip ranking, and vision QA.
@@ -42,6 +49,31 @@ input video
   -> loudnorm post-process
   -> thumbnail + QA artifacts
 ```
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Input Video] --> B[Preprocess<br/>normalize + extract WAV]
+    B --> C[Analysis<br/>Whisper + scenes + silence]
+    C --> D[Optional Clip Ranking]
+    C --> E[Auto Scenario Generation]
+    E --> F[Optional TTS Voiceover]
+    D --> G[AI Edit Generation]
+    E --> G
+    F --> G
+    G --> H[Remotion Render]
+    H --> I[Audio Post Process<br/>loudnorm]
+    I --> J[Thumbnail + QA]
+    J --> K[Web UI / API Artifacts]
+```
+
+## Demo Surfaces
+
+- Upload and submit a new render job from the web UI
+- Inspect the generated `scenario.json`, `edit.json`, and multimodal artifacts
+- Review thumbnail and QA output after render
+- Browse the built-in pipeline guide at `/how-it-works`
 
 ## Repository Layout
 
