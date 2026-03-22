@@ -44,6 +44,18 @@ export function Layout(): React.JSX.Element {
             >
               History
             </NavLink>
+            <NavLink
+              to="/how-it-works"
+              className={({ isActive }) =>
+                `px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  isActive
+                    ? 'bg-white/15 text-white'
+                    : 'text-gray-300 hover:text-white hover:bg-white/10'
+                }`
+              }
+            >
+              How it works
+            </NavLink>
           </nav>
         </div>
       </header>

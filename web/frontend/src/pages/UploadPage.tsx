@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { createJob } from '../api/client';
 import type { InputMode, ScenarioForm, ScenarioSection } from '../types/scenario';
 
@@ -176,6 +176,15 @@ export function UploadPage(): React.JSX.Element {
           Upload a video and configure your scenario to generate an edited
           version.
         </p>
+        <Link
+          to="/how-it-works"
+          className="inline-flex items-center gap-2 mt-3 text-sm font-medium text-[#1a1a2e] hover:text-[#c8102e] transition-colors"
+        >
+          How the pipeline works
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M9 5l7 7-7 7" />
+          </svg>
+        </Link>
       </div>
 
       {/* Video Upload Zone */}
