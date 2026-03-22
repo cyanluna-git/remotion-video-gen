@@ -4,6 +4,16 @@ Screen recording in, AI-assisted edit pipeline out.
 
 This repository generates edited videos from screen recordings using a staged pipeline built with Remotion, Python analysis scripts, ffmpeg, Whisper, Claude, and optional multimodal components such as TTS narration, clip ranking, and vision QA.
 
+## Screenshots
+
+### Upload flow
+
+![Upload Page](docs/screenshots/upload-page.png)
+
+### How it works
+
+![How It Works Page](docs/screenshots/how-it-works-page.png)
+
 ## What It Does
 
 - Accepts a source recording plus either:
