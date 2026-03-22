@@ -11,6 +11,20 @@ Screen recording in, AI-assisted edit pipeline out.
 
 This repository generates edited videos from screen recordings using a staged pipeline built with Remotion, Python analysis scripts, ffmpeg, Whisper, Claude, and optional multimodal components such as TTS narration, clip ranking, and vision QA.
 
+## TL;DR
+
+- Put in a screen recording
+- Let the pipeline analyze, structure, edit, and render it
+- Review the final MP4 plus `scenario.json`, `edit.json`, thumbnail, and QA artifacts
+
+## Getting Started In 3 Commands
+
+```bash
+pip install -r requirements.txt
+npm install --prefix remotion && npm install --prefix web/frontend
+./pipeline.sh input.mp4 --auto-scenario --title "Demo Run" --language ko
+```
+
 ## Screenshots
 
 ### Upload flow
