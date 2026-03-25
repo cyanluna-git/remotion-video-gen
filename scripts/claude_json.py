@@ -71,7 +71,9 @@ def _call_claude(prompt: str, *, engine: str) -> str:
         return _call_claude_cli(prompt)
     if engine == "api":
         return _call_claude_api(prompt)
-    raise ValueError(f"Unsupported Claude engine: {engine}")
+    if engine == "codex":
+        return _call_codex_cli(prompt)
+    raise ValueError(f"Unsupported engine: {engine}")
 
 
 def _call_claude_cli(prompt: str) -> str:
@@ -83,13 +85,13 @@ def _call_claude_cli(prompt: str) -> str:
             cmd,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=300,
         )
     except FileNotFoundError:
         print("ERROR: 'claude' CLI not found. Is Claude Code installed?", file=sys.stderr)
         sys.exit(1)
     except subprocess.TimeoutExpired:
-        print("ERROR: Claude CLI timed out after 120s.", file=sys.stderr)
+        print("ERROR: Claude CLI timed out after 300s.", file=sys.stderr)
         sys.exit(1)
 
     if result.returncode != 0:
@@ -100,6 +102,54 @@ def _call_claude_cli(prompt: str) -> str:
 
     print(f"  Response received ({len(result.stdout)} chars)")
     return result.stdout
+
+
+def _call_codex_cli(prompt: str) -> str:
+    print("Calling Codex CLI (codex exec)...")
+
+    import os
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+        output_file = f.name
+
+    cmd = [
+        "codex",
+        "exec",
+        "--ephemeral",
+        "-o",
+        output_file,
+        "-",
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except FileNotFoundError:
+        print("ERROR: 'codex' CLI not found. Is Codex CLI installed?", file=sys.stderr)
+        sys.exit(1)
+    except subprocess.TimeoutExpired:
+        print("ERROR: Codex CLI timed out after 600s.", file=sys.stderr)
+        sys.exit(1)
+
+    if result.returncode != 0:
+        print(f"ERROR: Codex CLI exited with code {result.returncode}", file=sys.stderr)
+        if result.stderr:
+            print(f"  stderr: {result.stderr[:500]}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        with open(output_file) as f:
+            response_text = f.read()
+    finally:
+        os.unlink(output_file)
+
+    print(f"  Response received ({len(response_text)} chars)")
+    return response_text
 
 
 def _call_claude_api(prompt: str) -> str:

@@ -88,13 +88,13 @@ def rewrite_single_audio_src(
     if not candidate.exists() or not candidate.is_file():
         return raw_src
 
-    dest_dir = public_dir / "voiceover" / asset_scope
+    dest_dir = public_dir / "voiceover"
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / candidate.name
     if candidate.resolve() != dest_path.resolve():
         shutil.copy2(candidate, dest_path)
 
-    return f"voiceover/{asset_scope}/{candidate.name}"
+    return f"voiceover/{candidate.name}"
 
 
 def main(argv: list[str] | None = None) -> None:

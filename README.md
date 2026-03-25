@@ -9,7 +9,7 @@
 
 Screen recording in, AI-assisted edit pipeline out.
 
-This repository generates edited videos from screen recordings using a staged pipeline built with Remotion, Python analysis scripts, ffmpeg, Whisper, Claude, and optional multimodal components such as TTS narration, clip ranking, and vision QA.
+This repository generates edited videos from screen recordings using a staged pipeline built with Remotion, Python analysis scripts, ffmpeg, Whisper, Claude/Codex, and optional multimodal components such as TTS narration, clip ranking, and vision QA. A **full-dub mode** replaces the presenter's voice with polished TTS narration and automatically removes dead air via jump-cut editing.
 
 ## TL;DR
 
@@ -64,6 +64,25 @@ input video
   -> thumbnail + QA artifacts
 ```
 
+### Full-Dub Mode (`--full-dub`)
+
+Replaces the presenter's voice with professional TTS narration and cuts dead air:
+
+```text
+input video
+  -> preprocess + analysis (same as above)
+  -> auto scenario generation (codex)
+  -> chunk transcript (~12s segments)
+  -> polish narration (codex AI cleanup)
+  -> granular TTS (edge-tts per chunk, 40-50 tracks)
+  -> AI edit generation (codex)
+  -> jump-cut timeline rebuild (pad +-1s, merge gaps)
+  -> Remotion render (original audio muted)
+  -> loudnorm post-process
+```
+
+Typical result: a 7-minute raw recording becomes a 5-minute edited video with consistent TTS narration, bottom captions, and section title cards.
+
 ## Architecture
 
 ```mermaid
@@ -80,6 +99,13 @@ flowchart LR
     H --> I[Audio Post Process<br/>loudnorm]
     I --> J[Thumbnail + QA]
     J --> K[Web UI / API Artifacts]
+
+    C -.->|full-dub| C1[Chunk Transcript]
+    C1 --> C2[Polish Narration<br/>Codex]
+    C2 --> C3[Granular TTS<br/>edge-tts]
+    C3 --> G
+    G -.->|full-dub| G1[Rebuild Timeline<br/>jump-cuts]
+    G1 --> H
 ```
 
 ## Demo Surfaces
@@ -94,7 +120,7 @@ flowchart LR
 ```text
 .
 ├── pipeline.sh              # Main end-to-end pipeline
-├── scripts/                 # Python analysis and AI generation scripts
+├── scripts/                 # Python analysis, AI generation, and full-dub scripts
 ├── remotion/                # Remotion render project
 ├── web/
 │   ├── backend/             # FastAPI wrapper around pipeline jobs
@@ -136,9 +162,9 @@ OPENAI_API_KEY=...           # Optional OpenAI TTS / vision QA
 
 CLIP_RANKING_PROVIDER=heuristic
 
-TTS_PROVIDER=                # openai | mock
+TTS_PROVIDER=                # openai | edge | mock
 TTS_MODEL=gpt-4o-mini-tts
-TTS_VOICE=alloy
+TTS_VOICE=alloy              # or en-US-AndrewMultilingualNeural for edge
 TTS_AUDIO_FORMAT=wav
 TTS_INSTRUCTIONS=
 
@@ -161,13 +187,29 @@ VISION_QA_DETAIL=low
 ./pipeline.sh input.mp4 --auto-scenario --title "Demo Run" --language ko
 ```
 
-### 3. Enable TTS narration
+### 3. Full-dub mode (replace voice with TTS + jump-cut editing)
 
 ```bash
-TTS_PROVIDER=openai OPENAI_API_KEY=... ./pipeline.sh input.mp4 --auto-scenario
+./pipeline.sh input.mp4 --full-dub --title "Product Demo" --language en
 ```
 
-### 4. Inspect the Remotion composition locally
+This automatically: generates a scenario, chunks the transcript, polishes narration via Codex, generates per-segment TTS (edge-tts), builds the edit script, rebuilds the timeline with jump-cuts, and renders with the original voice muted.
+
+### 4. Full-dub with custom settings
+
+```bash
+./pipeline.sh input.mp4 --full-dub --title "Demo" \
+  --pad-before 0.3 --pad-after 0.8 --merge-gap 2.0 \
+  --tts-voice en-US-GuyNeural
+```
+
+### 5. Enable section-level TTS narration (non-full-dub)
+
+```bash
+TTS_PROVIDER=edge ./pipeline.sh input.mp4 --auto-scenario
+```
+
+### 6. Inspect the Remotion composition locally
 
 ```bash
 npm --prefix remotion run start

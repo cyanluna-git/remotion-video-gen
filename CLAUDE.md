@@ -39,6 +39,10 @@ remotion-video-gen/
 │   ├── generate_clip_ranking.py
 │   ├── clip_ranking.py
 │   ├── generate_voiceover.py
+│   ├── chunk_transcript.py
+│   ├── polish_narration.py
+│   ├── generate_granular_tts.py
+│   ├── rebuild_timeline.py
 │   ├── tts_providers.py
 │   └── convert_captions.py
 ├── scenarios/               # 시나리오 JSON/MD
@@ -55,7 +59,7 @@ remotion-video-gen/
 | Video Processing | ffmpeg (libx264) |
 | Speech-to-Text | Whisper large-v3-turbo (openai-whisper) |
 | Scene Detection | PySceneDetect (AdaptiveDetector) |
-| AI Edit/Caption | Claude API (anthropic SDK) |
+| AI Edit/Caption | Claude CLI / Codex CLI / Anthropic SDK |
 | Scripts | Python 3.12+ (type hints, Black) |
 | Pipeline | Bash |
 | Package Manager | npm (Remotion), pip (Python) |
@@ -115,8 +119,14 @@ remotion-video-gen/
 # AI-assisted 전체 파이프라인
 ./pipeline.sh input.mp4 --auto-scenario --title "Demo Run" --language ko
 
-# TTS 포함 전체 파이프라인
-TTS_PROVIDER=openai OPENAI_API_KEY=sk-... ./pipeline.sh input.mp4 --auto-scenario
+# Full-dub 모드 (음성 TTS 교체 + 점프컷 편집)
+./pipeline.sh input.mp4 --full-dub --title "Product Demo" --language en
+
+# Full-dub 커스텀 타이밍
+./pipeline.sh input.mp4 --full-dub --title "Demo" --pad-before 0.3 --pad-after 0.8 --merge-gap 2.0
+
+# TTS 포함 전체 파이프라인 (섹션별 TTS, non-full-dub)
+TTS_PROVIDER=edge ./pipeline.sh input.mp4 --auto-scenario
 
 # 로컬 mock TTS로 voiceover manifest만 점검
 python scripts/generate_voiceover.py --scenario .work/scenario.generated.json --output .work/voiceover/manifest.json --provider mock
@@ -148,7 +158,7 @@ VISION_QA_PROVIDER=             # Optional: openai | mock
 VISION_QA_MODEL=gpt-4.1-mini    # Default OpenAI vision QA model
 VISION_QA_DETAIL=low            # Vision image detail for sampled frames
 CLIP_RANKING_PROVIDER=heuristic # Optional: heuristic | none
-TTS_PROVIDER=                   # Optional: openai | mock
+TTS_PROVIDER=                   # Optional: openai | edge | mock
 TTS_MODEL=gpt-4o-mini-tts       # Default OpenAI TTS model
 TTS_VOICE=alloy                 # Default OpenAI voice
 TTS_AUDIO_FORMAT=wav            # Voiceover asset format

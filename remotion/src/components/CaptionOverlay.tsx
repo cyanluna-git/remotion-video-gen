@@ -1,10 +1,5 @@
 import React from "react";
-import {
-  AbsoluteFill,
-  interpolate,
-  useCurrentFrame,
-  useVideoConfig,
-} from "remotion";
+import { interpolate, useCurrentFrame, useVideoConfig } from "remotion";
 import type { CaptionClass } from "../types/script";
 
 interface CaptionOverlayProps {
@@ -41,24 +36,20 @@ export const CaptionOverlay: React.FC<CaptionOverlayProps> = ({
 
   const opacity = fadeIn * fadeOut;
 
-  const positionStyle: React.CSSProperties =
-    position === "top"
-      ? { top: 80, left: 0, right: 0 }
+  const containerStyle: React.CSSProperties = {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    display: "flex",
+    justifyContent: "center",
+    opacity,
+    pointerEvents: "none",
+    ...(position === "top"
+      ? { top: 80 }
       : position === "center"
-        ? { top: 0, bottom: 0, left: 0, right: 0 }
-        : { bottom: 80, left: 0, right: 0 };
-
-  const containerAlign: React.CSSProperties =
-    position === "center"
-      ? {
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }
-      : {
-          display: "flex",
-          justifyContent: "center",
-        };
+        ? { top: 0, bottom: 0, alignItems: "center" }
+        : { bottom: 80 }),
+  };
 
   const textStyle: React.CSSProperties =
     variant === "announcement"
@@ -101,15 +92,8 @@ export const CaptionOverlay: React.FC<CaptionOverlayProps> = ({
           };
 
   return (
-    <AbsoluteFill
-      style={{
-        ...positionStyle,
-        ...containerAlign,
-        opacity,
-        pointerEvents: "none",
-      }}
-    >
+    <div style={containerStyle}>
       <div style={textStyle}>{text}</div>
-    </AbsoluteFill>
+    </div>
   );
 };

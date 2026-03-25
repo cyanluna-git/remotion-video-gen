@@ -85,6 +85,11 @@ print_usage() {
   echo "  --tts-format EXT  Voiceover audio format/extension (default: wav)"
   echo "  --tts-instructions TEXT"
   echo "                     Optional provider-specific narration style instructions"
+  echo "  --full-dub         Full dubbing mode: auto-scenario + granular TTS + jump-cut editing"
+  echo "  --engine NAME      AI engine: cli (default), api, codex"
+  echo "  --pad-before SEC   Video padding before narration (default: 0.5, full-dub only)"
+  echo "  --pad-after SEC    Video padding after narration (default: 1.0, full-dub only)"
+  echo "  --merge-gap SEC    Merge clips if gap < this (default: 1.5, full-dub only)"
   echo "  --skip-analysis    Skip Step 2 (use cached .work/ files)"
   echo "  --skip-ai          Skip Step 3 (use existing edit.json)"
   echo "  --edit-only        Only run Step 4 (Remotion render)"
@@ -117,6 +122,11 @@ TTS_MODEL="${TTS_MODEL:-gpt-4o-mini-tts}"
 TTS_VOICE="${TTS_VOICE:-alloy}"
 TTS_AUDIO_FORMAT="${TTS_AUDIO_FORMAT:-wav}"
 TTS_INSTRUCTIONS="${TTS_INSTRUCTIONS:-}"
+FULL_DUB=false
+ENGINE="${ENGINE:-cli}"
+PAD_BEFORE="${PAD_BEFORE:-0.5}"
+PAD_AFTER="${PAD_AFTER:-1.0}"
+MERGE_GAP="${MERGE_GAP:-1.5}"
 SKIP_ANALYSIS=false
 SKIP_AI=false
 EDIT_ONLY=false
@@ -144,6 +154,11 @@ while [ $# -gt 0 ]; do
     --tts-voice) TTS_VOICE="$2"; shift ;;
     --tts-format) TTS_AUDIO_FORMAT="$2"; shift ;;
     --tts-instructions) TTS_INSTRUCTIONS="$2"; shift ;;
+    --full-dub) FULL_DUB=true ;;
+    --engine) ENGINE="$2"; shift ;;
+    --pad-before) PAD_BEFORE="$2"; shift ;;
+    --pad-after) PAD_AFTER="$2"; shift ;;
+    --merge-gap) MERGE_GAP="$2"; shift ;;
     --skip-analysis) SKIP_ANALYSIS=true ;;
     --skip-ai) SKIP_AI=true ;;
     --edit-only) EDIT_ONLY=true ;;
@@ -163,6 +178,15 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# --full-dub implies defaults
+if [ "$FULL_DUB" = true ]; then
+  AUTO_SCENARIO=true
+  [ "$ENGINE" = "cli" ] && ENGINE="codex"
+  [ -z "$TTS_PROVIDER" ] && TTS_PROVIDER="edge"
+  [ "$TTS_VOICE" = "alloy" ] && TTS_VOICE="en-US-AndrewMultilingualNeural"
+  [ "$TTS_AUDIO_FORMAT" = "wav" ] && TTS_AUDIO_FORMAT="mp3"
+fi
 
 if [ "$AUTO_SCENARIO" = true ] && [ -n "$MANUAL_INPUT" ]; then
   echo "Error: manual scenario input cannot be combined with --auto-scenario."
@@ -276,6 +300,8 @@ SCENES="$WORK_DIR/scenes.json"
 SILENCES="$WORK_DIR/silences.json"
 CAPTIONS="$WORK_DIR/captions.json"
 AI_EDIT="$EDIT_OUTPUT"
+TTS_CHUNKS="$WORK_DIR/tts_chunks.json"
+POLISHED_CHUNKS="$WORK_DIR/polished_chunks.json"
 DEFAULT_CLIP_RANKING_ARTIFACT="$(dirname "$AI_EDIT")/analysis/clip-ranking.json"
 DEFAULT_VOICEOVER_MANIFEST="$(dirname "$AI_EDIT")/voiceover/manifest.json"
 VOICEOVER_ERROR_OUTPUT="$(dirname "$DEFAULT_VOICEOVER_MANIFEST")/error.json"
@@ -533,10 +559,54 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ] && [ "$FROM_STEP" -le 3 ];
       [ -n "$CLIP_RANKING_ARTIFACT" ] && [ -f "$CLIP_RANKING_ARTIFACT" ] && SCENARIO_ARGS+=(--clip-ranking "$CLIP_RANKING_ARTIFACT")
       [ -f "$NORMALIZED" ] && SCENARIO_ARGS+=(--video "$NORMALIZED")
 
-      python3 "$SCRIPTS_DIR/generate_scenario.py" --engine cli "${SCENARIO_ARGS[@]}"
+      python3 "$SCRIPTS_DIR/generate_scenario.py" --engine "$ENGINE" "${SCENARIO_ARGS[@]}"
       echo "  [OK] AI scenario: $SCENARIO_OUTPUT"
     else
       echo "  [CACHE] AI-generated scenario exists: $SCENARIO_OUTPUT"
+    fi
+  fi
+
+  # ── Full-dub sub-steps: chunk, polish, granular TTS ──
+  if [ "$FULL_DUB" = true ] && [ -f "$TRANSCRIPT" ]; then
+    # 3c: Chunk transcript
+    if [ "$FORCE" = true ] || [ ! -f "$TTS_CHUNKS" ]; then
+      echo "  [3c] Chunking transcript for granular TTS..."
+      python3 "$SCRIPTS_DIR/chunk_transcript.py" \
+        --transcript "$TRANSCRIPT" \
+        --output "$TTS_CHUNKS"
+      echo "  [3c] [OK] Chunks: $TTS_CHUNKS"
+    else
+      echo "  [3c] [CACHE] Chunks exist: $TTS_CHUNKS"
+    fi
+
+    # 3d: Polish narration
+    if [ "$FORCE" = true ] || [ ! -f "$POLISHED_CHUNKS" ]; then
+      echo "  [3d] Polishing narration via $ENGINE..."
+      python3 "$SCRIPTS_DIR/polish_narration.py" \
+        --chunks "$TTS_CHUNKS" \
+        --output "$POLISHED_CHUNKS" \
+        --engine "$ENGINE"
+      echo "  [3d] [OK] Polished: $POLISHED_CHUNKS"
+    else
+      echo "  [3d] [CACHE] Polished chunks exist: $POLISHED_CHUNKS"
+    fi
+
+    # 3e: Generate granular TTS
+    if [ "$FORCE" = true ] || [ ! -f "$DEFAULT_VOICEOVER_MANIFEST" ]; then
+      echo "  [3e] Generating granular TTS via $TTS_PROVIDER ($TTS_VOICE)..."
+      rm -rf "$(dirname "$DEFAULT_VOICEOVER_MANIFEST")"
+      python3 "$SCRIPTS_DIR/generate_granular_tts.py" \
+        --chunks "$TTS_CHUNKS" \
+        --polished "$POLISHED_CHUNKS" \
+        --output "$DEFAULT_VOICEOVER_MANIFEST" \
+        --provider "$TTS_PROVIDER" \
+        --voice "$TTS_VOICE" \
+        --audio-format "$TTS_AUDIO_FORMAT"
+      echo "  [3e] [OK] Manifest: $DEFAULT_VOICEOVER_MANIFEST"
+      VOICEOVER_MANIFEST="$DEFAULT_VOICEOVER_MANIFEST"
+    else
+      echo "  [3e] [CACHE] Granular TTS exists: $DEFAULT_VOICEOVER_MANIFEST"
+      VOICEOVER_MANIFEST="$DEFAULT_VOICEOVER_MANIFEST"
     fi
   fi
 
@@ -547,7 +617,8 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ] && [ "$FROM_STEP" -le 3 ];
     STEP_STATUS[2]="CACHE"
   else
     echo "  Generating edit script via AI..."
-    if [ -z "$VOICEOVER_MANIFEST" ] && [ -n "$TTS_PROVIDER" ]; then
+    # Section-level TTS (non-full-dub mode)
+    if [ "$FULL_DUB" = false ] && [ -z "$VOICEOVER_MANIFEST" ] && [ -n "$TTS_PROVIDER" ]; then
       if [ "$FORCE" = true ] || [ ! -f "$DEFAULT_VOICEOVER_MANIFEST" ]; then
         echo "  [3b] Generating voiceover via TTS provider: $TTS_PROVIDER"
         rm -rf "$(dirname "$DEFAULT_VOICEOVER_MANIFEST")"
@@ -584,10 +655,28 @@ if [ "$EDIT_ONLY" = false ] && [ "$SKIP_AI" = false ] && [ "$FROM_STEP" -le 3 ];
     [ -f "$NORMALIZED" ] && GENERATE_ARGS+=(--video "$NORMALIZED")
     [ -n "$VOICEOVER_MANIFEST" ] && [ -f "$VOICEOVER_MANIFEST" ] && GENERATE_ARGS+=(--voiceover-manifest "$VOICEOVER_MANIFEST")
 
-    python3 "$SCRIPTS_DIR/generate_edit.py" --engine cli "${GENERATE_ARGS[@]}"
+    python3 "$SCRIPTS_DIR/generate_edit.py" --engine "$ENGINE" "${GENERATE_ARGS[@]}"
     echo "  [OK] AI edit script: $AI_EDIT"
     PROPS_FILE="$AI_EDIT"
     STEP_STATUS[2]="RAN"
+  fi
+
+  # ── Full-dub: rebuild timeline with jump-cuts ──
+  if [ "$FULL_DUB" = true ] && [ -f "$VOICEOVER_MANIFEST" ]; then
+    echo "  [3g] Rebuilding jump-cut timeline from narration..."
+    REBUILD_ARGS=(
+      --manifest "$VOICEOVER_MANIFEST"
+      --scenario "$SCENARIO_FILE"
+      --base-edit "$AI_EDIT"
+      --output "$AI_EDIT"
+      --pad-before "$PAD_BEFORE"
+      --pad-after "$PAD_AFTER"
+      --merge-gap "$MERGE_GAP"
+    )
+    [ -f "$CAPTIONS" ] && REBUILD_ARGS+=(--captions "$CAPTIONS")
+    python3 "$SCRIPTS_DIR/rebuild_timeline.py" "${REBUILD_ARGS[@]}"
+    echo "  [3g] [OK] Timeline rebuilt: $AI_EDIT"
+    PROPS_FILE="$AI_EDIT"
   fi
 
   STEP_ELAPSED[2]=$(($(date +%s) - STEP_START))

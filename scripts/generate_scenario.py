@@ -52,9 +52,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True, help="Output scenario.json path")
     parser.add_argument(
         "--engine",
-        choices=["cli", "api"],
+        choices=["cli", "api", "codex"],
         default="cli",
-        help="Engine: 'cli' uses claude -p (default), 'api' uses Anthropic SDK",
+        help="Engine: 'cli' uses claude -p (default), 'api' uses Anthropic SDK, 'codex' uses codex exec",
     )
     return parser.parse_args(argv)
 

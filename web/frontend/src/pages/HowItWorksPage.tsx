@@ -115,21 +115,31 @@ const pipelineSteps: PipelineStep[] = [
     tag: 'optional TTS',
     ai: true,
     description:
-      'TTS provider가 켜져 있으면 각 scenario section 설명을 음성으로 합성하고, provider-agnostic voiceover manifest로 묶습니다.',
-    inputs: ['scenario.json', 'TTS provider config'],
-    outputs: ['voiceover/*.wav or provider format', 'voiceover/manifest.json', 'voiceover/error.json on failure'],
-    notes: ['현재 provider는 mock과 OpenAI입니다.', 'TTS가 실패하면 voiceover 없이 렌더를 계속합니다.'],
+      'TTS provider가 켜져 있으면 음성을 합성합니다. 일반 모드는 scenario section별로 생성하고, full-dub 모드는 transcript를 ~12초 청크로 분할 → AI가 나레이션 다듬기 → 청크별 TTS 생성(40-50 트랙)으로 원본 음성을 완전히 대체합니다.',
+    inputs: ['scenario.json 또는 transcript chunks', 'TTS provider config'],
+    outputs: ['voiceover/*.mp3 or provider format', 'voiceover/manifest.json', 'tts_chunks.json (full-dub)', 'polished_chunks.json (full-dub)'],
+    notes: ['현재 provider는 mock, OpenAI, edge(무료)입니다.', 'Full-dub은 edge-tts + en-US-AndrewMultilingualNeural 보이스를 기본 사용합니다.', 'TTS가 실패하면 voiceover 없이 렌더를 계속합니다.'],
   },
   {
     number: '07',
     title: '편집 스크립트 생성',
-    tag: 'Claude',
+    tag: 'Claude / Codex',
     ai: true,
     description:
-      'Claude가 scenario와 각종 분석 산출물을 사용해 최종 edit.json timeline을 생성합니다. caption class, title card, transition, original audio, voiceover track 정보가 여기에 들어갑니다.',
+      'AI가 scenario와 각종 분석 산출물을 사용해 최종 edit.json timeline을 생성합니다. caption class, title card, transition, original audio, voiceover track 정보가 여기에 들어갑니다. CLI(Claude), API, Codex 엔진을 선택할 수 있습니다.',
     inputs: ['scenario.json', 'analysis artifacts', 'optional clip ranking', 'optional voiceover manifest'],
     outputs: ['edit.json'],
-    notes: ['sources.main은 recordings/normalized.mp4로 정규화됩니다.', 'voiceover manifest가 있을 때만 narration track이 붙습니다.'],
+    notes: ['sources.main은 recordings/normalized.mp4로 정규화됩니다.', 'voiceover manifest가 있을 때만 narration track이 붙습니다.', 'Full-dub 모드는 Codex 엔진을 기본 사용합니다.'],
+  },
+  {
+    number: '07.5',
+    title: '타임라인 재구성',
+    tag: 'full-dub',
+    description:
+      'Full-dub 모드에서만 실행됩니다. 나레이션 타이밍을 기반으로 타임라인을 재구성합니다: 각 TTS 트랙 전후에 패딩을 두고(기본 -0.5s/+1.0s), 무음 구간을 잘라냅니다. 인접 클립은 병합(gap < 1.5s)하고, 섹션 경계에 타이틀 카드를 삽입합니다. 원본 음성은 완전히 제거됩니다.',
+    inputs: ['edit.json', 'voiceover/manifest.json', 'scenario.json', 'optional captions.json'],
+    outputs: ['edit.json (rebuilt with jump-cuts)'],
+    notes: ['7분 녹화 → 5분 편집 영상으로 자동 압축됩니다.', '--pad-before, --pad-after, --merge-gap으로 타이밍 조절 가능합니다.'],
   },
   {
     number: '08',
@@ -170,8 +180,9 @@ const flowNodes: FlowNode[] = [
   { label: '분석', detail: 'transcript / scene / silence', tone: 'ai', ai: true },
   { label: '클립 랭킹', detail: '고신호 구간 힌트', tone: 'optional' },
   { label: '시나리오', detail: 'auto 모드에서만 생성', tone: 'ai', ai: true },
-  { label: 'TTS', detail: 'section별 narration', tone: 'optional', ai: true },
+  { label: 'TTS', detail: 'section별 또는 세그먼트별 narration', tone: 'optional', ai: true },
   { label: 'edit.json', detail: '최종 타임라인', tone: 'ai', ai: true },
+  { label: '타임라인 재구성', detail: 'full-dub: 점프컷 편집', tone: 'optional', ai: true },
   { label: 'Remotion', detail: 'render + loudnorm', tone: 'core' },
   { label: 'QA', detail: 'thumbnail + heuristic + vision', tone: 'output', ai: true },
 ];
@@ -184,8 +195,8 @@ const summaryCards: SummaryCard[] = [
   },
   {
     label: 'Optional AI',
-    value: 'TTS / Ranking / Vision',
-    detail: '나레이션, 클립 랭킹, vision QA는 조건부로 붙으며 실패해도 메인 렌더는 계속됩니다.',
+    value: 'Full-Dub / TTS / Ranking / Vision',
+    detail: 'Full-dub 모드는 원본 음성을 TTS로 교체하고 점프컷 편집까지 자동화합니다. 나레이션, 클립 랭킹, vision QA는 조건부로 붙으며 실패해도 메인 렌더는 계속됩니다.',
   },
   {
     label: '결과 산출물',
@@ -222,12 +233,22 @@ const faqItems: FaqItem[] = [
     answer:
       '최종 MP4, 진행 로그, edit.json, thumbnail, QA 결과, voiceover manifest, clip-ranking artifact를 확인할 수 있습니다.',
   },
+  {
+    question: 'Full-dub 모드는 언제 사용하나요?',
+    answer:
+      '발표자의 음성을 깔끔한 TTS 나레이션으로 완전히 교체하고 싶을 때 사용합니다. 비네이티브 발표자의 데모 녹화, 다국어 더빙, 또는 일관된 톤의 제품 소개 영상을 만들 때 특히 유용합니다. --full-dub 플래그 하나로 전체 워크플로우가 자동화됩니다.',
+  },
+  {
+    question: 'Full-dub에서 사용하는 TTS 엔진은 무엇인가요?',
+    answer:
+      '기본적으로 Microsoft Edge TTS(edge-tts)를 사용하며, API 키 없이 무료로 이용할 수 있습니다. 보이스는 en-US-AndrewMultilingualNeural(Warm, Confident 톤)이 기본이며 --tts-voice로 변경 가능합니다. OpenAI TTS도 지원합니다.',
+  },
 ];
 
 const artifacts = [
   { label: '핵심 미디어', value: 'input.mp4, final.mp4, thumbnail.jpg' },
   { label: '분석 산출물', value: 'transcript.json, scenes.json, silences.json, captions.json, clip-ranking.json' },
-  { label: 'AI 산출물', value: 'scenario.json, edit.json, voiceover/manifest.json' },
+  { label: 'AI 산출물', value: 'scenario.json, edit.json, voiceover/manifest.json, tts_chunks.json, polished_chunks.json' },
   { label: '리뷰 산출물', value: 'qa.json, qa.heuristic.json, qa.vision.json' },
 ];
 

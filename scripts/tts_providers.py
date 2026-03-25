@@ -131,6 +131,39 @@ class OpenAITtsProvider(BaseTtsProvider):
         }
 
 
+class EdgeTtsProvider(BaseTtsProvider):
+    """Free Microsoft Edge TTS provider via edge-tts package."""
+
+    def synthesize(self, request: TtsRequest) -> dict[str, Any]:
+        try:
+            import edge_tts
+        except ImportError as exc:
+            raise TtsProviderError(
+                "The edge-tts package is not installed. Run `pip install edge-tts`."
+            ) from exc
+
+        import asyncio
+
+        request.output_path.parent.mkdir(parents=True, exist_ok=True)
+        voice = self.config.voice
+
+        async def _synthesize() -> None:
+            communicate = edge_tts.Communicate(request.text, voice)
+            await communicate.save(str(request.output_path))
+
+        asyncio.run(_synthesize())
+
+        duration_sec = probe_audio_duration(request.output_path)
+        return {
+            "durationSec": round(duration_sec, 3) if duration_sec is not None else None,
+            "provider": {
+                "name": self.config.name,
+                "model": self.config.model,
+                "voice": self.config.voice,
+            },
+        }
+
+
 def build_tts_provider(
     provider_name: str,
     *,
@@ -153,6 +186,8 @@ def build_tts_provider(
         return MockTtsProvider(config)
     if config.name == "openai":
         return OpenAITtsProvider(config)
+    if config.name == "edge":
+        return EdgeTtsProvider(config)
     raise TtsProviderError(f"Unsupported TTS provider: {provider_name}")
 
 

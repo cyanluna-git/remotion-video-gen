@@ -105,6 +105,9 @@ function normalizeVoiceoverTracks(audio?: AudioConfig): VoiceoverTrack[] {
 
 function getOriginalAudioVolume(audio: AudioConfig | undefined): number {
   const baseVolume = audio?.originalAudio?.volume ?? 1;
+  if (baseVolume === 0) {
+    return 0;
+  }
   const voiceoverTracks = normalizeVoiceoverTracks(audio);
   if (voiceoverTracks.length === 0) {
     return baseVolume;
@@ -112,10 +115,10 @@ function getOriginalAudioVolume(audio: AudioConfig | undefined): number {
 
   const voiceover = audio?.voiceover;
   if (voiceover && "tracks" in voiceover) {
-    return voiceover.mix?.duckedVolume ?? 0.35;
+    return Math.min(baseVolume, voiceover.mix?.duckedVolume ?? 0.35);
   }
 
-  return 0.35;
+  return Math.min(baseVolume, 0.35);
 }
 
 function getTotalDurationInFrames(script: EditScript): number {

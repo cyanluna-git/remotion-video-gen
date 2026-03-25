@@ -2,10 +2,13 @@ node_modules/
 .work/
 output/
 remotion/public/recordings/
+remotion/public/voiceover/
+inputs/**/*.mp4
 dist/
 *.mp4
 *.wav
 *.webm
+*.mp3
 .env
 .env.local
 .DS_Store
