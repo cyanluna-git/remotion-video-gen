@@ -98,6 +98,7 @@ print_usage() {
   echo "  --from-step=N      Start from step N (1-5), skip earlier steps"
   echo "  --renderer NAME    Renderer backend: remotion (default) | capcut"
   echo "  --drafts-dir PATH  CapCut drafts folder (only with --renderer capcut)"
+  echo "  --captions MODE    Caption mode for CapCut: whisper | capcut-ai | none (default: whisper)"
   echo "  --output PATH      Output file (default: output/final.mp4)"
   echo "  --concurrency N    Remotion parallel frames (default: 4)"
 }
@@ -138,6 +139,7 @@ OUTPUT_FILE="$OUTPUT_DIR/final.mp4"
 CONCURRENCY=4
 RENDERER="remotion"
 DRAFTS_DIR=""
+CAPTIONS_MODE="whisper"
 
 # Parse optional flags
 shift
@@ -172,6 +174,7 @@ while [ $# -gt 0 ]; do
     --concurrency) CONCURRENCY="$2"; shift ;;
     --renderer) RENDERER="$2"; shift ;;
     --drafts-dir) DRAFTS_DIR="$2"; shift ;;
+    --captions) CAPTIONS_MODE="$2"; shift ;;
     --help|-h) print_usage; exit 0 ;;
     --*) echo "Unknown option: $1"; exit 1 ;;
     *)
@@ -778,7 +781,8 @@ if [ "$FROM_STEP" -le 4 ]; then
 
     CAPCUT_CMD=(python3 "$SCRIPTS_DIR/export_capcut.py"
       --input "$EDIT_SOURCE"
-      --video-dir "$WORK_DIR")
+      --video-dir "$WORK_DIR"
+      --captions "$CAPTIONS_MODE")
     if [ -n "$DRAFTS_DIR" ]; then
       CAPCUT_CMD+=(--drafts-dir "$DRAFTS_DIR")
     fi

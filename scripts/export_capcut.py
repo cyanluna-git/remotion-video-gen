@@ -22,8 +22,12 @@ from pathlib import Path
 from typing import Any
 
 from pycapcut import (
+    ClipSettings,
     DraftFolder,
     SEC,
+    TextBackground,
+    TextSegment,
+    TextStyle,
     Timerange,
     TrackType,
     TransitionType,
@@ -45,6 +49,29 @@ TRANSITION_MAP: dict[str, TransitionType] = {
     "slide-right": TransitionType.向右,
     "wipe": TransitionType.向右擦除,
 }
+
+# ── Caption / overlay constants ───────────────────────────────────────────────
+
+MIN_DURATION_US: int = 500_000  # 0.5 s clamp
+
+POSITION_Y_MAP: dict[str, float] = {
+    "top": -0.7,
+    "center": 0.0,
+    "bottom": 0.7,
+}
+
+# captionClass → TextStyle presets (size is pyCapCut float units, not pt)
+CAPTION_STYLES: dict[str, dict[str, Any]] = {
+    "subtitle": {"size": 8.0, "bold": False, "color": (1.0, 1.0, 1.0)},
+    "announcement": {"size": 12.0, "bold": True, "color": (1.0, 1.0, 1.0)},
+    "technical-term": {"size": 8.0, "bold": True, "color": (1.0, 0.95, 0.4)},
+}
+
+DEFAULT_CAPTION_BG_HEX = "#000000"
+DEFAULT_CAPTION_BG_ALPHA = 0.6
+
+TEXT_TRACK_NAME = "overlays"
+CAPTIONS_TRACK_NAME = "captions"
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -71,6 +98,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=Path(".work"),
         help="Base directory for resolving relative source paths (default: .work/)",
+    )
+    parser.add_argument(
+        "--captions",
+        type=str,
+        choices=["whisper", "capcut-ai", "none"],
+        default="whisper",
+        help="Caption mode: whisper (SRT import), capcut-ai (use CapCut AI), none (no captions)",
     )
     return parser.parse_args(argv)
 
@@ -113,6 +147,124 @@ def extract_hex_color(css_value: str) -> str:
     if match:
         return f"#{match.group(1)}"
     return "#1e1b4b"
+
+
+def _captions_json_to_srt(captions: list[dict[str, Any]], output_path: Path) -> Path:
+    """Convert [{startSec, endSec, text}] to SRT format and write to output_path."""
+    lines: list[str] = []
+    for idx, cap in enumerate(captions, start=1):
+        start_sec: float = cap.get("startSec", 0.0)
+        end_sec: float = cap.get("endSec", start_sec + 0.5)
+        text: str = cap.get("text", "")
+        lines.append(str(idx))
+        lines.append(f"{_format_srt_time(start_sec)} --> {_format_srt_time(end_sec)}")
+        lines.append(text)
+        lines.append("")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+    return output_path
+
+
+def _format_srt_time(seconds: float) -> str:
+    """Format seconds as SRT timestamp HH:MM:SS,mmm."""
+    total_ms = int(round(seconds * 1000))
+    hours = total_ms // 3_600_000
+    minutes = (total_ms % 3_600_000) // 60_000
+    secs = (total_ms % 60_000) // 1_000
+    millis = total_ms % 1_000
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def _create_caption_text_segment(
+    overlay: dict[str, Any],
+    clip_timeline_start_us: int,
+    clip_duration_us: int,
+    speed: float,
+) -> TextSegment:
+    """Create a TextSegment from a caption overlay."""
+    start_offset_sec: float = overlay.get("startSec", 0.0)
+    duration_sec: float = overlay.get("durationSec", 2.0)
+
+    # Absolute start on timeline (accounting for speed)
+    abs_start_us = clip_timeline_start_us + int(start_offset_sec / speed * SEC)
+    raw_duration_us = int(duration_sec / speed * SEC)
+
+    # Clamp: min duration
+    duration_us = max(raw_duration_us, MIN_DURATION_US)
+    # Clamp: don't exceed clip end
+    clip_end_us = clip_timeline_start_us + clip_duration_us
+    if abs_start_us + duration_us > clip_end_us:
+        duration_us = max(clip_end_us - abs_start_us, MIN_DURATION_US)
+
+    text: str = overlay.get("text", "")
+    caption_class: str = overlay.get("captionClass", "subtitle")
+    position: str = overlay.get("position", "bottom")
+
+    # Style
+    style_params = CAPTION_STYLES.get(caption_class, CAPTION_STYLES["subtitle"])
+    text_style = TextStyle(**style_params)
+
+    # Position
+    transform_y = POSITION_Y_MAP.get(position, POSITION_Y_MAP["bottom"])
+    clip_settings = ClipSettings(transform_y=transform_y)
+
+    # Background for subtitle/announcement
+    background: TextBackground | None = None
+    if caption_class in ("subtitle", "announcement"):
+        background = TextBackground(color=DEFAULT_CAPTION_BG_HEX, alpha=DEFAULT_CAPTION_BG_ALPHA)
+
+    return TextSegment(
+        text,
+        Timerange(abs_start_us, duration_us),
+        style=text_style,
+        clip_settings=clip_settings,
+        background=background,
+    )
+
+
+def _create_highlight_segment(
+    overlay: dict[str, Any],
+    clip_timeline_start_us: int,
+    clip_duration_us: int,
+    speed: float,
+) -> TextSegment:
+    """Create a TextSegment (space with colored background) from a highlight overlay."""
+    start_offset_sec: float = overlay.get("startSec", 0.0)
+    duration_sec: float = overlay.get("durationSec", 2.0)
+
+    abs_start_us = clip_timeline_start_us + int(start_offset_sec / speed * SEC)
+    raw_duration_us = int(duration_sec / speed * SEC)
+    duration_us = max(raw_duration_us, MIN_DURATION_US)
+    clip_end_us = clip_timeline_start_us + clip_duration_us
+    if abs_start_us + duration_us > clip_end_us:
+        duration_us = max(clip_end_us - abs_start_us, MIN_DURATION_US)
+
+    region: dict[str, float] = overlay.get("region", {})
+    color_str: str = overlay.get("color", "#FFFF00")
+    color_hex = extract_hex_color(color_str)
+
+    # Map region to ClipSettings: x,y center -> transform_x/y (0=center, ±1=edge)
+    rx = region.get("x", 0.5)
+    ry = region.get("y", 0.5)
+    rw = region.get("width", 0.2)
+    rh = region.get("height", 0.1)
+    transform_x = (rx + rw / 2 - 0.5) * 2.0
+    transform_y = (ry + rh / 2 - 0.5) * 2.0
+
+    clip_settings = ClipSettings(
+        transform_x=transform_x,
+        transform_y=transform_y,
+        scale_x=rw,
+        scale_y=rh,
+    )
+    background = TextBackground(color=color_hex, alpha=0.35)
+
+    return TextSegment(
+        " ",
+        Timerange(abs_start_us, duration_us),
+        clip_settings=clip_settings,
+        background=background,
+    )
 
 
 def generate_title_card(
@@ -190,6 +342,7 @@ def export_capcut(args: argparse.Namespace) -> Path:
 
     # Process timeline entries
     segments: list[VideoSegment] = []
+    text_segments: list[TextSegment] = []
     timeline_cursor: int = 0  # microseconds
     title_card_idx: int = 0
     draft_dir = drafts_dir / draft_name
@@ -226,6 +379,22 @@ def export_capcut(args: argparse.Namespace) -> Path:
             _apply_transition(seg, entry, i, timeline)
 
             segments.append(seg)
+
+            # Process overlays for this clip
+            for overlay in entry.get("overlays", []):
+                overlay_type: str = overlay.get("type", "")
+                try:
+                    if overlay_type == "caption":
+                        text_segments.append(
+                            _create_caption_text_segment(overlay, timeline_cursor, target_duration, speed)
+                        )
+                    elif overlay_type == "highlight":
+                        text_segments.append(
+                            _create_highlight_segment(overlay, timeline_cursor, target_duration, speed)
+                        )
+                except Exception as exc:
+                    print(f"WARNING: failed to create overlay at clip {i}: {exc}", file=sys.stderr)
+
             timeline_cursor += target_duration
 
         elif entry_type == "title-card":
@@ -252,15 +421,67 @@ def export_capcut(args: argparse.Namespace) -> Path:
             segments.append(seg)
             timeline_cursor += card_duration_us
 
-    # Add all segments to the script (use default video track — no track_name needed for single track)
+    # Add all video segments
     for seg in segments:
         script.add_segment(seg)
+
+    # Add text overlay segments, distributing across tracks to avoid overlaps
+    if text_segments:
+        _add_text_segments_to_tracks(script, text_segments)
+
+    # Handle global captions (--captions flag)
+    captions_mode: str = getattr(args, "captions", "whisper")
+    if captions_mode == "whisper":
+        global_captions: list[dict[str, Any]] = edit_data.get("captions", [])
+        if global_captions:
+            srt_path = (args.video_dir / "captions.srt").resolve()
+            _captions_json_to_srt(global_captions, srt_path)
+            script.add_track(TrackType.text, CAPTIONS_TRACK_NAME)
+            caption_style = TextStyle(size=8.0, bold=False, color=(1.0, 1.0, 1.0))
+            caption_clip = ClipSettings(transform_y=0.7)
+            script.import_srt(str(srt_path), CAPTIONS_TRACK_NAME, text_style=caption_style, clip_settings=caption_clip)
+            print(f"  Imported {len(global_captions)} captions from edit.json via SRT", file=sys.stderr)
+        else:
+            print("  No global captions in edit.json — skipping SRT import", file=sys.stderr)
+    elif captions_mode == "capcut-ai":
+        print(
+            "\n💡 Captions mode: capcut-ai\n"
+            "   Open the draft in CapCut and use Auto captions (Text → Auto captions)\n"
+            "   to generate AI-powered captions.",
+            file=sys.stderr,
+        )
+    # captions_mode == "none": do nothing
 
     script.save()
 
     draft_path = drafts_dir / draft_name
     _print_instructions(draft_path)
     return draft_path
+
+
+def _add_text_segments_to_tracks(script: Any, text_segments: list[TextSegment]) -> None:
+    """Distribute text segments across tracks to avoid overlap errors.
+
+    Uses a greedy approach: each track maintains an end-time watermark.
+    A segment goes to the first track where it doesn't overlap.
+    """
+    tracks: list[tuple[str, int]] = []  # (track_name, end_us)
+
+    for tseg in text_segments:
+        seg_start = tseg.start
+        seg_end = seg_start + tseg.duration
+        placed = False
+        for idx, (track_name, track_end) in enumerate(tracks):
+            if seg_start >= track_end:
+                script.add_segment(tseg, track_name)
+                tracks[idx] = (track_name, seg_end)
+                placed = True
+                break
+        if not placed:
+            track_name = f"{TEXT_TRACK_NAME}_{len(tracks)}"
+            script.add_track(TrackType.text, track_name)
+            script.add_segment(tseg, track_name)
+            tracks.append((track_name, seg_end))
 
 
 def _apply_transition(seg: VideoSegment, entry: dict[str, Any], index: int, timeline: list[dict[str, Any]]) -> None:
