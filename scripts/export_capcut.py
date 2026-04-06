@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any
 
 from pycapcut import (
+    AudioMaterial,
+    AudioSegment,
     ClipSettings,
     DraftFolder,
     SEC,
@@ -105,6 +107,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=["whisper", "capcut-ai", "none"],
         default="whisper",
         help="Caption mode: whisper (SRT import), capcut-ai (use CapCut AI), none (no captions)",
+    )
+    parser.add_argument(
+        "--voiceover-manifest",
+        type=Path,
+        default=None,
+        help="Path to voiceover manifest JSON. Auto-probes .work/voiceover/manifest.json when omitted.",
     )
     return parser.parse_args(argv)
 
@@ -294,6 +302,136 @@ def generate_title_card(
     return output_path
 
 
+# ── Voiceover helpers ─────────────────────────────────────────────────────────
+
+VOICEOVER_TRACK_PREFIX = "voiceover"
+
+
+def load_voiceover_manifest(path: Path | None, video_dir: Path) -> dict[str, Any] | None:
+    """Load voiceover manifest JSON, auto-probing if *path* is None.
+
+    Returns the parsed manifest dict or None (with a warning) when the file
+    is missing or the manifest contains no tracks.
+    """
+    if path is None:
+        path = (video_dir / ".work" / "voiceover" / "manifest.json").resolve()
+        if not path.exists():
+            # Also try video_dir parent (common layout: video_dir=.work/)
+            alt = (video_dir / "voiceover" / "manifest.json").resolve()
+            if alt.exists():
+                path = alt
+    else:
+        path = path.resolve()
+
+    if not path.exists():
+        print(f"WARNING: voiceover manifest not found at {path} — skipping audio mapping", file=sys.stderr)
+        return None
+
+    with path.open("r", encoding="utf-8") as f:
+        manifest: dict[str, Any] = json.load(f)
+
+    tracks = manifest.get("tracks")
+    if not isinstance(tracks, list) or not tracks:
+        print("WARNING: voiceover manifest has no tracks — skipping audio mapping", file=sys.stderr)
+        return None
+
+    return manifest
+
+
+def _add_voiceover_audio(
+    script: Any,
+    manifest: dict[str, Any],
+    video_dir: Path,
+    timeline_end_us: int,
+) -> None:
+    """Map each voiceover manifest track to a pyCapCut AudioSegment on dedicated audio tracks."""
+    tracks: list[dict[str, Any]] = manifest.get("tracks", [])
+    if not tracks:
+        return
+
+    # Greedy track allocation: (track_name, end_us)
+    audio_tracks: list[tuple[str, int]] = []
+
+    for idx, track in enumerate(tracks):
+        src_rel: str = track.get("src", "")
+        src_path = Path(src_rel)
+        if not src_path.is_absolute():
+            src_path = (video_dir / src_path).resolve()
+        else:
+            src_path = src_path.resolve()
+
+        if not src_path.exists():
+            print(f"WARNING: voiceover source not found: {src_path} — skipping track '{track.get('id')}'", file=sys.stderr)
+            continue
+
+        start_sec: float = track.get("startSec", 0.0)
+        duration_sec: float = track.get("durationSec", 0.0)
+        offset_sec: float = track.get("offsetSec", 0.0)
+        playback_rate: float = track.get("playbackRate", 1.0)
+        volume: float = track.get("volume", 1.0)
+        fade_in_sec: float = track.get("fadeInSec", 0.0)
+        fade_out_sec: float = track.get("fadeOutSec", 0.0)
+
+        if duration_sec <= 0:
+            print(f"WARNING: voiceover track '{track.get('id')}' has durationSec <= 0 — skipping", file=sys.stderr)
+            continue
+
+        # Timeline position in microseconds
+        target_start_us = int(start_sec * SEC)
+        target_duration_us = int(duration_sec / playback_rate * SEC) if playback_rate != 1.0 else int(duration_sec * SEC)
+
+        # Warn + clamp if start exceeds timeline end
+        if target_start_us >= timeline_end_us > 0:
+            print(
+                f"WARNING: voiceover track '{track.get('id')}' starts at {start_sec}s "
+                f"which is beyond timeline end ({timeline_end_us / SEC:.3f}s) — clamping",
+                file=sys.stderr,
+            )
+            target_start_us = max(0, timeline_end_us - target_duration_us)
+
+        # Source timerange (offsetSec into the audio file)
+        source_start_us = int(offset_sec * SEC)
+        source_duration_us = int(duration_sec * SEC)
+        source_tr = Timerange(source_start_us, source_duration_us)
+
+        target_tr = Timerange(target_start_us, target_duration_us)
+
+        # Create material + segment
+        mat = AudioMaterial(str(src_path))
+        script.add_material(mat)
+
+        speed_param: float | None = playback_rate if playback_rate != 1.0 else None
+        seg = AudioSegment(
+            mat,
+            target_tr,
+            source_timerange=source_tr,
+            speed=speed_param,
+            volume=volume,
+        )
+
+        # Fade in/out
+        if fade_in_sec > 0 or fade_out_sec > 0:
+            seg.add_fade(int(fade_in_sec * SEC), int(fade_out_sec * SEC))
+
+        # Place on a non-overlapping audio track (greedy)
+        seg_start = target_start_us
+        seg_end = target_start_us + target_duration_us
+        placed = False
+        for t_idx, (t_name, t_end) in enumerate(audio_tracks):
+            if seg_start >= t_end:
+                script.add_segment(seg, t_name)
+                audio_tracks[t_idx] = (t_name, seg_end)
+                placed = True
+                break
+        if not placed:
+            track_name = f"{VOICEOVER_TRACK_PREFIX}_{len(audio_tracks)}"
+            script.add_track(TrackType.audio, track_name)
+            script.add_segment(seg, track_name)
+            audio_tracks.append((track_name, seg_end))
+
+    print(f"  Mapped {len(tracks)} voiceover track(s) to {len(audio_tracks)} audio track(s)", file=sys.stderr)
+
+
 # ── Main export logic ─────────────────────────────────────────────────────────
 
 
@@ -451,6 +589,12 @@ def export_capcut(args: argparse.Namespace) -> Path:
             file=sys.stderr,
         )
     # captions_mode == "none": do nothing
+
+    # ── Voiceover audio mapping ───────────────────────────────────────────
+    vo_manifest_path: Path | None = getattr(args, "voiceover_manifest", None)
+    vo_manifest = load_voiceover_manifest(vo_manifest_path, args.video_dir)
+    if vo_manifest is not None:
+        _add_voiceover_audio(script, vo_manifest, args.video_dir, timeline_cursor)
 
     script.save()
 

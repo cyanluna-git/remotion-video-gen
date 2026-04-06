@@ -1214,3 +1214,465 @@ class TestOverlaysEndToEnd(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── Voiceover manifest tests ─────────────────────────────────────────────────
+
+from scripts.export_capcut import (
+    load_voiceover_manifest,
+    _add_voiceover_audio,
+    VOICEOVER_TRACK_PREFIX,
+)
+
+
+def _make_audio_stub(directory: Path, name: str = "vo.wav", duration_samples: int = 8000) -> Path:
+    """Create a minimal valid WAV file for voiceover testing."""
+    import struct
+
+    p = directory / name
+    sample_rate = 8000
+    data_size = duration_samples * 2
+    with p.open("wb") as f:
+        f.write(b"RIFF")
+        f.write(struct.pack("<I", 36 + data_size))
+        f.write(b"WAVE")
+        f.write(b"fmt ")
+        f.write(struct.pack("<I", 16))
+        f.write(struct.pack("<H", 1))
+        f.write(struct.pack("<H", 1))
+        f.write(struct.pack("<I", sample_rate))
+        f.write(struct.pack("<I", sample_rate * 2))
+        f.write(struct.pack("<H", 2))
+        f.write(struct.pack("<H", 16))
+        f.write(b"data")
+        f.write(struct.pack("<I", data_size))
+        f.write(b"\x00" * data_size)
+    return p
+
+
+def _make_manifest(
+    directory: Path,
+    tracks: list[dict] | None = None,
+    name: str = "manifest.json",
+) -> Path:
+    """Create a voiceover manifest JSON."""
+    manifest = {
+        "version": "1.0",
+        "artifact": "voiceover-manifest",
+        "status": "ready",
+        "tracks": tracks or [],
+        "summary": {"trackCount": len(tracks or [])},
+    }
+    p = directory / name
+    p.write_text(json.dumps(manifest), encoding="utf-8")
+    return p
+
+
+class TestLoadVoiceoverManifest(unittest.TestCase):
+    """Tests for load_voiceover_manifest()."""
+
+    def test_explicit_path_loads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _make_audio_stub(tmp_path, "vo.wav")
+            manifest_path = _make_manifest(tmp_path, tracks=[
+                {"id": "t1", "src": "vo.wav", "startSec": 0, "durationSec": 1.0},
+            ])
+            result = load_voiceover_manifest(manifest_path, tmp_path)
+            self.assertIsNotNone(result)
+            self.assertEqual(len(result["tracks"]), 1)
+
+    def test_auto_probe_work_voiceover(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            vo_dir = tmp_path / ".work" / "voiceover"
+            vo_dir.mkdir(parents=True)
+            _make_audio_stub(vo_dir, "vo.wav")
+            _make_manifest(vo_dir, tracks=[
+                {"id": "t1", "src": "vo.wav", "startSec": 0, "durationSec": 1.0},
+            ])
+            result = load_voiceover_manifest(None, tmp_path)
+            self.assertIsNotNone(result)
+
+    def test_auto_probe_voiceover_subdir(self) -> None:
+        """Auto-probe also checks video_dir/voiceover/ (when video_dir=.work/)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            vo_dir = tmp_path / "voiceover"
+            vo_dir.mkdir(parents=True)
+            _make_audio_stub(vo_dir, "vo.wav")
+            _make_manifest(vo_dir, tracks=[
+                {"id": "t1", "src": "vo.wav", "startSec": 0, "durationSec": 1.0},
+            ])
+            result = load_voiceover_manifest(None, tmp_path)
+            self.assertIsNotNone(result)
+
+    def test_missing_manifest_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = load_voiceover_manifest(None, Path(tmp))
+            self.assertIsNone(result)
+
+    def test_empty_tracks_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _make_manifest(tmp_path, tracks=[])
+            result = load_voiceover_manifest(tmp_path / "manifest.json", tmp_path)
+            self.assertIsNone(result)
+
+    def test_tracks_not_a_list_returns_none(self) -> None:
+        """Manifest with tracks as non-list (e.g. dict) should return None with warning."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bad_manifest = {
+                "version": "1.0",
+                "artifact": "voiceover-manifest",
+                "status": "ready",
+                "tracks": {"bad": "value"},  # not a list
+                "summary": {"trackCount": 0},
+            }
+            p = tmp_path / "manifest.json"
+            p.write_text(json.dumps(bad_manifest), encoding="utf-8")
+            result = load_voiceover_manifest(p, tmp_path)
+            self.assertIsNone(result)
+
+
+class TestAddVoiceoverAudio(unittest.TestCase):
+    """Tests for _add_voiceover_audio() via full export_capcut()."""
+
+    def _export_with_voiceover(
+        self,
+        tmp_path: Path,
+        tracks: list[dict],
+        timeline: list[dict] | None = None,
+    ) -> Path:
+        video_dir = tmp_path / "videos"
+        video_dir.mkdir(exist_ok=True)
+        _make_video_stub(video_dir, "rec.mp4")
+
+        vo_dir = video_dir / "voiceover"
+        vo_dir.mkdir(exist_ok=True)
+        for t in tracks:
+            src = t.get("src", "")
+            audio_name = Path(src).name
+            if not (video_dir / src).exists():
+                audio_parent = (video_dir / src).parent
+                audio_parent.mkdir(parents=True, exist_ok=True)
+                _make_audio_stub(audio_parent, audio_name, duration_samples=16000)
+
+        manifest_path = _make_manifest(vo_dir, tracks=tracks)
+
+        if timeline is None:
+            timeline = [{"type": "clip", "source": "main", "startSec": 0, "endSec": 0.5}]
+
+        edit_path = _make_edit_json(
+            tmp_path,
+            sources={"main": "rec.mp4"},
+            timeline=timeline,
+        )
+
+        drafts_dir = tmp_path / "drafts"
+        args = parse_args([
+            "--input", str(edit_path),
+            "--drafts-dir", str(drafts_dir),
+            "--draft-name", "vo_test",
+            "--video-dir", str(video_dir),
+            "--captions", "none",
+            "--voiceover-manifest", str(manifest_path),
+        ])
+        return export_capcut(args)
+
+    def _load_draft_content(self, draft_path: Path) -> dict:
+        content_json = draft_path / "draft_content.json"
+        return json.loads(content_json.read_text(encoding="utf-8"))
+
+    def _count_audio_tracks(self, draft_path: Path) -> int:
+        content = self._load_draft_content(draft_path)
+        tracks = content.get("tracks", [])
+        return sum(1 for t in tracks if t.get("type") == "audio")
+
+    def _get_audio_segments(self, draft_path: Path) -> list[dict]:
+        content = self._load_draft_content(draft_path)
+        tracks = content.get("tracks", [])
+        segments: list[dict] = []
+        for t in tracks:
+            if t.get("type") == "audio":
+                segments.extend(t.get("segments", []))
+        return segments
+
+    def test_single_track_creates_audio_segment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            draft_path = self._export_with_voiceover(tmp_path, tracks=[
+                {"id": "t1", "src": "voiceover/intro.wav", "startSec": 0.5, "durationSec": 1.0},
+            ])
+            self.assertTrue((draft_path / "draft_content.json").exists())
+            self.assertEqual(self._count_audio_tracks(draft_path), 1)
+            segments = self._get_audio_segments(draft_path)
+            self.assertEqual(len(segments), 1)
+
+    def test_multi_track_non_overlapping_same_track(self) -> None:
+        """Sequential tracks should reuse the same audio track."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            draft_path = self._export_with_voiceover(
+                tmp_path,
+                tracks=[
+                    {"id": "t1", "src": "voiceover/a.wav", "startSec": 0.0, "durationSec": 0.2},
+                    {"id": "t2", "src": "voiceover/b.wav", "startSec": 0.2, "durationSec": 0.2},
+                ],
+                timeline=[{"type": "clip", "source": "main", "startSec": 0, "endSec": 0.5}],
+            )
+            self.assertEqual(self._count_audio_tracks(draft_path), 1)
+            self.assertEqual(len(self._get_audio_segments(draft_path)), 2)
+
+    def test_multi_track_overlapping_separate_tracks(self) -> None:
+        """Overlapping tracks should be placed on separate audio tracks."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            draft_path = self._export_with_voiceover(tmp_path, tracks=[
+                {"id": "t1", "src": "voiceover/a.wav", "startSec": 0.0, "durationSec": 1.5},
+                {"id": "t2", "src": "voiceover/b.wav", "startSec": 0.5, "durationSec": 1.0},
+            ])
+            self.assertEqual(self._count_audio_tracks(draft_path), 2)
+            self.assertEqual(len(self._get_audio_segments(draft_path)), 2)
+
+    def test_volume_applied(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            draft_path = self._export_with_voiceover(tmp_path, tracks=[
+                {"id": "t1", "src": "voiceover/vo.wav", "startSec": 0, "durationSec": 1.0, "volume": 0.5},
+            ])
+            segments = self._get_audio_segments(draft_path)
+            self.assertEqual(len(segments), 1)
+            # pyCapCut stores volume in the segment
+            seg = segments[0]
+            self.assertAlmostEqual(seg.get("volume", 1.0), 0.5, places=2)
+
+    def test_zero_volume_still_added(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            draft_path = self._export_with_voiceover(tmp_path, tracks=[
+                {"id": "t1", "src": "voiceover/vo.wav", "startSec": 0, "durationSec": 1.0, "volume": 0.0},
+            ])
+            segments = self._get_audio_segments(draft_path)
+            self.assertEqual(len(segments), 1)
+
+    def test_timing_microseconds(self) -> None:
+        """startSec should map to correct microsecond position."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            draft_path = self._export_with_voiceover(
+                tmp_path,
+                tracks=[
+                    {"id": "t1", "src": "voiceover/vo.wav", "startSec": 0.2, "durationSec": 0.2},
+                ],
+                timeline=[{"type": "clip", "source": "main", "startSec": 0, "endSec": 0.5}],
+            )
+            segments = self._get_audio_segments(draft_path)
+            self.assertEqual(len(segments), 1)
+            seg = segments[0]
+            target_tr = seg.get("target_timerange", {})
+            self.assertEqual(target_tr.get("start", 0), int(0.2 * SEC))
+
+    def test_offset_sec_maps_to_source_timerange(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            draft_path = self._export_with_voiceover(tmp_path, tracks=[
+                {"id": "t1", "src": "voiceover/vo.wav", "startSec": 0, "durationSec": 0.5, "offsetSec": 0.3},
+            ])
+            segments = self._get_audio_segments(draft_path)
+            self.assertEqual(len(segments), 1)
+            seg = segments[0]
+            source_tr = seg.get("source_timerange", {})
+            self.assertEqual(source_tr.get("start", 0), int(0.3 * SEC))
+
+    def test_playback_rate_forwarded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            draft_path = self._export_with_voiceover(tmp_path, tracks=[
+                {"id": "t1", "src": "voiceover/vo.wav", "startSec": 0, "durationSec": 1.0, "playbackRate": 1.5},
+            ])
+            segments = self._get_audio_segments(draft_path)
+            self.assertEqual(len(segments), 1)
+            seg = segments[0]
+            self.assertAlmostEqual(seg.get("speed", 1.0), 1.5, places=2)
+
+    def test_missing_manifest_graceful_skip(self) -> None:
+        """When --voiceover-manifest points to a missing file, export still succeeds."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            video_dir = tmp_path / "videos"
+            video_dir.mkdir()
+            _make_video_stub(video_dir, "rec.mp4")
+
+            edit_path = _make_edit_json(
+                tmp_path,
+                sources={"main": "rec.mp4"},
+                timeline=[{"type": "clip", "source": "main", "startSec": 0, "endSec": 1.0}],
+            )
+
+            drafts_dir = tmp_path / "drafts"
+            args = parse_args([
+                "--input", str(edit_path),
+                "--drafts-dir", str(drafts_dir),
+                "--draft-name", "no_vo",
+                "--video-dir", str(video_dir),
+                "--captions", "none",
+                "--voiceover-manifest", str(tmp_path / "nonexistent.json"),
+            ])
+            draft_path = export_capcut(args)
+            self.assertTrue((draft_path / "draft_content.json").exists())
+            self.assertEqual(self._count_audio_tracks(draft_path), 0)
+
+    def test_start_beyond_timeline_clamped(self) -> None:
+        """Track starting after timeline end should be clamped with a warning."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            draft_path = self._export_with_voiceover(
+                tmp_path,
+                tracks=[
+                    {"id": "t1", "src": "voiceover/vo.wav", "startSec": 999.0, "durationSec": 1.0},
+                ],
+                timeline=[{"type": "clip", "source": "main", "startSec": 0, "endSec": 1.0}],
+            )
+            # Should still create the segment (clamped)
+            segments = self._get_audio_segments(draft_path)
+            self.assertEqual(len(segments), 1)
+
+    def test_fade_in_out_applied(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            draft_path = self._export_with_voiceover(tmp_path, tracks=[
+                {
+                    "id": "t1", "src": "voiceover/vo.wav",
+                    "startSec": 0, "durationSec": 1.0,
+                    "fadeInSec": 0.2, "fadeOutSec": 0.3,
+                },
+            ])
+            segments = self._get_audio_segments(draft_path)
+            self.assertEqual(len(segments), 1)
+
+    def test_missing_audio_file_skips_track(self) -> None:
+        """A track referencing a non-existent audio file should be skipped."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            video_dir = tmp_path / "videos"
+            video_dir.mkdir()
+            _make_video_stub(video_dir, "rec.mp4")
+
+            vo_dir = video_dir / "voiceover"
+            vo_dir.mkdir()
+            # Create manifest referencing a file that doesn't exist
+            manifest_path = _make_manifest(vo_dir, tracks=[
+                {"id": "t1", "src": "voiceover/missing.wav", "startSec": 0, "durationSec": 1.0},
+            ])
+
+            edit_path = _make_edit_json(
+                tmp_path,
+                sources={"main": "rec.mp4"},
+                timeline=[{"type": "clip", "source": "main", "startSec": 0, "endSec": 1.0}],
+            )
+            drafts_dir = tmp_path / "drafts"
+            args = parse_args([
+                "--input", str(edit_path),
+                "--drafts-dir", str(drafts_dir),
+                "--draft-name", "missing_audio",
+                "--video-dir", str(video_dir),
+                "--captions", "none",
+                "--voiceover-manifest", str(manifest_path),
+            ])
+            draft_path = export_capcut(args)
+            self.assertTrue((draft_path / "draft_content.json").exists())
+            # No audio track should be created (the only track was skipped)
+            self.assertEqual(self._count_audio_tracks(draft_path), 0)
+
+    def test_zero_duration_track_skipped(self) -> None:
+        """Track with durationSec=0 should be skipped (not added to any audio track)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            draft_path = self._export_with_voiceover(tmp_path, tracks=[
+                {"id": "t1", "src": "voiceover/vo.wav", "startSec": 0, "durationSec": 0.0},
+            ])
+            # Track is skipped → no audio tracks created
+            self.assertEqual(self._count_audio_tracks(draft_path), 0)
+            self.assertEqual(len(self._get_audio_segments(draft_path)), 0)
+
+    def test_negative_duration_track_skipped(self) -> None:
+        """Track with negative durationSec should be skipped."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            draft_path = self._export_with_voiceover(tmp_path, tracks=[
+                {"id": "t1", "src": "voiceover/vo.wav", "startSec": 0, "durationSec": -1.0},
+            ])
+            self.assertEqual(self._count_audio_tracks(draft_path), 0)
+
+    def test_playback_rate_adjusts_target_duration(self) -> None:
+        """playbackRate=2.0 should halve the target_timerange duration (compressed in time)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            draft_path = self._export_with_voiceover(tmp_path, tracks=[
+                {"id": "t1", "src": "voiceover/vo.wav", "startSec": 0, "durationSec": 1.0, "playbackRate": 2.0},
+            ])
+            segments = self._get_audio_segments(draft_path)
+            self.assertEqual(len(segments), 1)
+            target_tr = segments[0].get("target_timerange", {})
+            # durationSec=1.0, playbackRate=2.0 → target duration = 0.5s = 500_000 μs
+            expected_us = int(1.0 / 2.0 * 1_000_000)
+            self.assertEqual(target_tr.get("duration", 0), expected_us)
+
+    def test_only_fade_in_applied(self) -> None:
+        """fadeInSec set without fadeOutSec should still trigger add_fade with 0 out-duration."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            draft_path = self._export_with_voiceover(tmp_path, tracks=[
+                {"id": "t1", "src": "voiceover/vo.wav", "startSec": 0, "durationSec": 1.0, "fadeInSec": 0.2},
+            ])
+            segments = self._get_audio_segments(draft_path)
+            self.assertEqual(len(segments), 1)
+            # Fade adds an extra material ref beyond the default speed ref
+            seg = segments[0]
+            refs = seg.get("extra_material_refs", [])
+            self.assertGreater(len(refs), 1, "fade should add a second extra_material_ref beyond the speed ref")
+
+    def test_only_fade_out_applied(self) -> None:
+        """fadeOutSec set without fadeInSec should still trigger add_fade with 0 in-duration."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            draft_path = self._export_with_voiceover(tmp_path, tracks=[
+                {"id": "t1", "src": "voiceover/vo.wav", "startSec": 0, "durationSec": 1.0, "fadeOutSec": 0.3},
+            ])
+            segments = self._get_audio_segments(draft_path)
+            self.assertEqual(len(segments), 1)
+            seg = segments[0]
+            refs = seg.get("extra_material_refs", [])
+            self.assertGreater(len(refs), 1, "fade should add a second extra_material_ref beyond the speed ref")
+
+    def test_no_fade_when_both_zero(self) -> None:
+        """Segments without fadeInSec/fadeOutSec should have only the default speed ref (no fade ref)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            draft_path = self._export_with_voiceover(tmp_path, tracks=[
+                {"id": "t1", "src": "voiceover/vo.wav", "startSec": 0, "durationSec": 1.0},
+            ])
+            segments = self._get_audio_segments(draft_path)
+            self.assertEqual(len(segments), 1)
+            seg = segments[0]
+            refs = seg.get("extra_material_refs", [])
+            # Without fade: only the speed material ref is present (1 ref baseline from pycapcut)
+            self.assertEqual(len(refs), 1, "no fade → only speed ref in extra_material_refs")
+
+
+class TestParseArgsVoiceover(unittest.TestCase):
+    """Tests for --voiceover-manifest CLI argument."""
+
+    def test_default_is_none(self) -> None:
+        args = parse_args(["--input", "edit.json"])
+        self.assertIsNone(args.voiceover_manifest)
+
+    def test_custom_path(self) -> None:
+        args = parse_args(["--input", "edit.json", "--voiceover-manifest", "/path/to/manifest.json"])
+        self.assertEqual(args.voiceover_manifest, Path("/path/to/manifest.json"))
+
+
+if __name__ == "__main__":
+    unittest.main()
