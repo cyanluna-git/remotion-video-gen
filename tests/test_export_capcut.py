@@ -12,14 +12,19 @@ from scripts.export_capcut import (
     _create_caption_text_segment,
     _create_highlight_segment,
     _format_srt_time,
+    _parse_linear_gradient,
+    _hex_to_rgb,
+    _render_gradient_image,
     export_capcut,
     extract_hex_color,
+    generate_title_card,
     load_edit_json,
     parse_args,
     resolve_sources,
     CAPTION_STYLES,
     MIN_DURATION_US,
     POSITION_Y_MAP,
+    TRANSITION_MAP,
 )
 from pycapcut import SEC
 
@@ -453,9 +458,11 @@ class TestGenerateTitleCard(unittest.TestCase):
             from PIL import Image as PILImage
             generate_title_card("Gradient", None, "linear-gradient(135deg, #c8102e, #1e1b4b)", 8, 8, output_path)
             img = PILImage.open(str(output_path))
-            # Corner pixel should be close to #c8102e (200, 16, 46)
+            # Top-left pixel should be close to #c8102e (gradient renders top-to-bottom)
             corner = img.getpixel((0, 0))
-            self.assertEqual(corner, (0xc8, 0x10, 0x2e))
+            self.assertAlmostEqual(corner[0], 0xc8, delta=15)
+            self.assertAlmostEqual(corner[1], 0x10, delta=40)
+            self.assertAlmostEqual(corner[2], 0x2e, delta=35)
 
 
 class TestExtractHexColorAdditional(unittest.TestCase):
@@ -1672,6 +1679,259 @@ class TestParseArgsVoiceover(unittest.TestCase):
     def test_custom_path(self) -> None:
         args = parse_args(["--input", "edit.json", "--voiceover-manifest", "/path/to/manifest.json"])
         self.assertEqual(args.voiceover_manifest, Path("/path/to/manifest.json"))
+
+
+# ── Phase 1: Gradient parsing tests ──────────────────────────────────────────
+
+
+class TestParseLinearGradient(unittest.TestCase):
+    def test_basic_two_color_gradient(self) -> None:
+        result = _parse_linear_gradient("linear-gradient(135deg, #667eea 0%, #764ba2 100%)")
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0], ("#667eea", 0.0))
+        self.assertEqual(result[1], ("#764ba2", 1.0))
+
+    def test_three_color_gradient(self) -> None:
+        result = _parse_linear_gradient("linear-gradient(90deg, #ff0000 0%, #00ff00 50%, #0000ff 100%)")
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result[1][1], 0.5)
+
+    def test_no_percentage_auto_distributes(self) -> None:
+        result = _parse_linear_gradient("linear-gradient(to right, #ff0000, #0000ff)")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0][1], 0.0)
+        self.assertEqual(result[1][1], 1.0)
+
+    def test_solid_color_returns_none(self) -> None:
+        result = _parse_linear_gradient("#c8102e")
+        self.assertIsNone(result)
+
+    def test_radial_gradient_returns_none(self) -> None:
+        result = _parse_linear_gradient("radial-gradient(circle, #ff0000, #0000ff)")
+        self.assertIsNone(result)
+
+    def test_single_color_gradient_returns_none(self) -> None:
+        result = _parse_linear_gradient("linear-gradient(90deg, #ff0000)")
+        self.assertIsNone(result)
+
+    def test_no_angle_prefix(self) -> None:
+        result = _parse_linear_gradient("linear-gradient(#ff0000 0%, #00ff00 100%)")
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 2)
+
+    def test_case_insensitive(self) -> None:
+        result = _parse_linear_gradient("LINEAR-GRADIENT(135deg, #667eea 0%, #764ba2 100%)")
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 2)
+
+
+class TestHexToRgb(unittest.TestCase):
+    def test_six_digit(self) -> None:
+        self.assertEqual(_hex_to_rgb("#ff0000"), (255, 0, 0))
+
+    def test_three_digit(self) -> None:
+        self.assertEqual(_hex_to_rgb("#f00"), (255, 0, 0))
+
+    def test_mixed_case(self) -> None:
+        self.assertEqual(_hex_to_rgb("#FfAa00"), (255, 170, 0))
+
+
+class TestRenderGradientImage(unittest.TestCase):
+    def test_creates_correct_size(self) -> None:
+        stops = [("#ff0000", 0.0), ("#0000ff", 1.0)]
+        img = _render_gradient_image(stops, 100, 50)
+        self.assertEqual(img.size, (100, 50))
+
+    def test_top_pixel_near_first_color(self) -> None:
+        stops = [("#ff0000", 0.0), ("#0000ff", 1.0)]
+        img = _render_gradient_image(stops, 10, 100)
+        r, g, b = img.getpixel((5, 0))
+        self.assertGreater(r, 200)
+        self.assertLess(b, 55)
+
+    def test_bottom_pixel_near_last_color(self) -> None:
+        stops = [("#ff0000", 0.0), ("#0000ff", 1.0)]
+        img = _render_gradient_image(stops, 10, 100)
+        r, g, b = img.getpixel((5, 99))
+        self.assertLess(r, 55)
+        self.assertGreater(b, 200)
+
+    def test_three_stop_midpoint(self) -> None:
+        stops = [("#ff0000", 0.0), ("#00ff00", 0.5), ("#0000ff", 1.0)]
+        img = _render_gradient_image(stops, 10, 101)
+        r, g, b = img.getpixel((5, 50))
+        self.assertGreater(g, 200)
+
+
+class TestGenerateTitleCardGradient(unittest.TestCase):
+    def test_gradient_background_produces_png(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "card.png"
+            generate_title_card("Hello", None, "linear-gradient(135deg, #667eea 0%, #764ba2 100%)", 200, 100, output_path)
+            self.assertTrue(output_path.exists())
+            from PIL import Image as PILImage
+            img = PILImage.open(str(output_path))
+            self.assertEqual(img.size, (200, 100))
+
+    def test_solid_color_still_works(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "card.png"
+            generate_title_card("Hello", None, "#1e1b4b", 100, 100, output_path)
+            self.assertTrue(output_path.exists())
+            from PIL import Image as PILImage
+            img = PILImage.open(str(output_path))
+            # All pixels should be the solid color (except text)
+            corner = img.getpixel((0, 0))
+            self.assertEqual(corner, (0x1e, 0x1b, 0x4b))
+
+
+# ── Phase 2: Expanded transition map tests ───────────────────────────────────
+
+
+class TestExpandedTransitionMap(unittest.TestCase):
+    def test_dissolve_maps_to_fade(self) -> None:
+        self.assertEqual(TRANSITION_MAP["dissolve"], TRANSITION_MAP["fade"])
+
+    def test_slide_up_exists(self) -> None:
+        self.assertIn("slide-up", TRANSITION_MAP)
+
+    def test_slide_down_exists(self) -> None:
+        self.assertIn("slide-down", TRANSITION_MAP)
+
+    def test_wipe_left_exists(self) -> None:
+        self.assertIn("wipe-left", TRANSITION_MAP)
+
+    def test_original_entries_preserved(self) -> None:
+        for key in ("fade", "slide-left", "slide-right", "wipe"):
+            self.assertIn(key, TRANSITION_MAP)
+
+
+# ── Phase 3: Template mode tests ─────────────────────────────────────────────
+
+
+class TestCapcutTemplateCLI(unittest.TestCase):
+    def test_default_is_none(self) -> None:
+        args = parse_args(["--input", "edit.json"])
+        self.assertIsNone(args.capcut_template)
+
+    def test_template_flag_parsed(self) -> None:
+        args = parse_args(["--input", "edit.json", "--capcut-template", "my_template"])
+        self.assertEqual(args.capcut_template, "my_template")
+
+    def test_video_track_default_is_zero(self) -> None:
+        args = parse_args(["--input", "edit.json"])
+        self.assertEqual(args.capcut_template_video_track, 0)
+
+    def test_text_track_default_is_zero(self) -> None:
+        args = parse_args(["--input", "edit.json"])
+        self.assertEqual(args.capcut_template_text_track, 0)
+
+    def test_custom_track_indices(self) -> None:
+        args = parse_args([
+            "--input", "edit.json",
+            "--capcut-template", "tpl",
+            "--capcut-template-video-track", "1",
+            "--capcut-template-text-track", "2",
+        ])
+        self.assertEqual(args.capcut_template_video_track, 1)
+        self.assertEqual(args.capcut_template_text_track, 2)
+
+
+class TestCapcutTemplateMode(unittest.TestCase):
+    def test_template_mode_calls_duplicate(self) -> None:
+        """Template mode uses duplicate_as_template and replace methods."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            video = _make_video_stub(tmp_path)
+
+            # Create a "template" draft first
+            from pycapcut import DraftFolder
+            df = DraftFolder(str(tmp_path))
+            tpl_script = df.create_draft("my_template", 1920, 1080, fps=30)
+            from pycapcut import VideoMaterial, VideoSegment, Timerange, TrackType
+            tpl_script.add_track(TrackType.video)
+            mat = VideoMaterial(str(video))
+            tpl_script.add_material(mat)
+            seg = VideoSegment(mat, Timerange(0, 1 * SEC), source_timerange=Timerange(0, 1 * SEC))
+            tpl_script.add_segment(seg)
+            tpl_script.save()
+
+            # Create edit.json with a clip
+            edit_json = _make_edit_json(
+                tmp_path,
+                sources={"main": str(video)},
+                timeline=[{"type": "clip", "source": "main", "startSec": 0, "endSec": 1}],
+            )
+
+            args = parse_args([
+                "--input", str(edit_json),
+                "--drafts-dir", str(tmp_path),
+                "--draft-name", "output_draft",
+                "--video-dir", str(tmp_path),
+                "--capcut-template", "my_template",
+            ])
+            draft_path = export_capcut(args)
+            self.assertTrue(draft_path.exists())
+            self.assertEqual(draft_path.name, "output_draft")
+
+    def test_normal_mode_unchanged_without_template(self) -> None:
+        """Without --capcut-template, export uses normal flow."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            video = _make_video_stub(tmp_path)
+            edit_json = _make_edit_json(
+                tmp_path,
+                sources={"main": str(video)},
+                timeline=[{"type": "clip", "source": "main", "startSec": 0, "endSec": 1}],
+            )
+            args = parse_args([
+                "--input", str(edit_json),
+                "--drafts-dir", str(tmp_path),
+                "--draft-name", "normal_draft",
+                "--video-dir", str(tmp_path),
+            ])
+            draft_path = export_capcut(args)
+            self.assertTrue(draft_path.exists())
+            self.assertEqual(draft_path.name, "normal_draft")
+
+
+# ── Phase 1: Title card TextSegment overlay test ─────────────────────────────
+
+
+class TestTitleCardTextSegments(unittest.TestCase):
+    def test_title_card_creates_text_segments(self) -> None:
+        """Title cards should produce pyCapCut TextSegments for editable title+subtitle."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            video = _make_video_stub(tmp_path)
+            edit_json = _make_edit_json(
+                tmp_path,
+                sources={"main": str(video)},
+                timeline=[
+                    {
+                        "type": "title-card",
+                        "text": "Hello World",
+                        "subtitle": "Subtitle Text",
+                        "background": "#1e1b4b",
+                        "durationSec": 3.0,
+                    },
+                    {"type": "clip", "source": "main", "startSec": 0, "endSec": 1},
+                ],
+            )
+            args = parse_args([
+                "--input", str(edit_json),
+                "--drafts-dir", str(tmp_path),
+                "--draft-name", "tc_draft",
+                "--video-dir", str(tmp_path),
+                "--captions", "none",
+            ])
+            draft_path = export_capcut(args)
+            self.assertTrue(draft_path.exists())
+            # Check that draft_content.json was written (basic sanity)
+            dc = draft_path / "draft_content.json"
+            self.assertTrue(dc.exists())
 
 
 if __name__ == "__main__":

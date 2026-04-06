@@ -38,18 +38,23 @@ from pycapcut import (
 )
 
 try:
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageFont
 except ImportError:
     Image = None  # type: ignore[assignment,misc]
     ImageDraw = None  # type: ignore[assignment,misc]
+    ImageFont = None  # type: ignore[assignment,misc]
 
 # ── Transition mapping ────────────────────────────────────────────────────────
 
 TRANSITION_MAP: dict[str, TransitionType] = {
     "fade": TransitionType.叠化,
+    "dissolve": TransitionType.叠化,
     "slide-left": TransitionType.向左,
     "slide-right": TransitionType.向右,
+    "slide-up": TransitionType.向上,
+    "slide-down": TransitionType.向下,
     "wipe": TransitionType.向右擦除,
+    "wipe-left": TransitionType.向左擦除,
 }
 
 # ── Caption / overlay constants ───────────────────────────────────────────────
@@ -113,6 +118,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help="Path to voiceover manifest JSON. Auto-probes .work/voiceover/manifest.json when omitted.",
+    )
+    parser.add_argument(
+        "--capcut-template",
+        type=str,
+        default=None,
+        help="Name of an existing CapCut draft to use as template. Duplicates and replaces segments.",
+    )
+    parser.add_argument(
+        "--capcut-template-video-track",
+        type=int,
+        default=0,
+        help="Video track index in the template to replace (default: 0).",
+    )
+    parser.add_argument(
+        "--capcut-template-text-track",
+        type=int,
+        default=0,
+        help="Text track index in the template to replace (default: 0).",
     )
     return parser.parse_args(argv)
 
@@ -275,6 +298,103 @@ def _create_highlight_segment(
     )
 
 
+def _parse_linear_gradient(css: str) -> list[tuple[str, float]] | None:
+    """Parse CSS linear-gradient() into a list of (hex_color, position) stops.
+
+    Returns None for non-linear-gradient strings (e.g. solid colors, radial-gradient).
+    Position is a float from 0.0 to 1.0.
+    """
+    m = re.match(r"linear-gradient\s*\((.+)\)", css.strip(), re.IGNORECASE)
+    if not m:
+        return None
+
+    body = m.group(1).strip()
+    # Split on commas, but keep things simple (no nested parens expected)
+    parts = [p.strip() for p in body.split(",")]
+    if not parts:
+        return None
+
+    # First part may be an angle (e.g. "135deg", "to right") — skip it
+    stops: list[tuple[str, float]] = []
+    start_idx = 0
+    if parts[0] and not re.search(r"#[0-9a-fA-F]", parts[0]):
+        start_idx = 1
+
+    color_parts = parts[start_idx:]
+    if not color_parts:
+        return None
+
+    for i, part in enumerate(color_parts):
+        hex_match = re.search(r"#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b", part)
+        if not hex_match:
+            continue
+        color = f"#{hex_match.group(1)}"
+        # Look for percentage position
+        pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", part)
+        if pct_match:
+            position = float(pct_match.group(1)) / 100.0
+        else:
+            # Auto-distribute: evenly spaced
+            total = len(color_parts)
+            position = i / max(total - 1, 1)
+        stops.append((color, position))
+
+    return stops if len(stops) >= 2 else None
+
+
+def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+    """Convert #RRGGBB or #RGB to (R, G, B) tuple."""
+    h = hex_color.lstrip("#")
+    if len(h) == 3:
+        h = h[0] * 2 + h[1] * 2 + h[2] * 2
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+def _render_gradient_image(
+    stops: list[tuple[str, float]],
+    width: int,
+    height: int,
+) -> "Image.Image":
+    """Render a vertical (top-to-bottom) linear gradient image from color stops."""
+    img = Image.new("RGB", (width, height))
+    pixels = img.load()
+    rgb_stops = [(_hex_to_rgb(c), p) for c, p in stops]
+
+    for y in range(height):
+        t = y / max(height - 1, 1)
+        # Find surrounding stops
+        lower = rgb_stops[0]
+        upper = rgb_stops[-1]
+        for j in range(len(rgb_stops) - 1):
+            if rgb_stops[j][1] <= t <= rgb_stops[j + 1][1]:
+                lower = rgb_stops[j]
+                upper = rgb_stops[j + 1]
+                break
+        # Interpolate
+        span = upper[1] - lower[1]
+        local_t = (t - lower[1]) / span if span > 0 else 0.0
+        r = int(lower[0][0] + (upper[0][0] - lower[0][0]) * local_t)
+        g = int(lower[0][1] + (upper[0][1] - lower[0][1]) * local_t)
+        b = int(lower[0][2] + (upper[0][2] - lower[0][2]) * local_t)
+        for x in range(width):
+            pixels[x, y] = (r, g, b)
+
+    return img
+
+
+def _load_font(size: int, bold: bool = False) -> "ImageFont.FreeTypeFont | ImageFont.ImageFont":
+    """Load a TrueType font at the given size, falling back to default."""
+    if ImageFont is None:
+        return None  # type: ignore[return-value]
+    names = (["DejaVuSans-Bold.ttf", "DejaVuSans.ttf"] if bold else ["DejaVuSans.ttf", "DejaVuSans-Bold.ttf"])
+    for name in names:
+        try:
+            return ImageFont.truetype(name, size)
+        except (OSError, IOError):
+            continue
+    return ImageFont.load_default()
+
+
 def generate_title_card(
     text: str,
     subtitle: str | None,
@@ -283,19 +403,27 @@ def generate_title_card(
     height: int,
     output_path: Path,
 ) -> Path:
-    """Generate a solid-color PNG with text overlay for a title card."""
+    """Generate a PNG title card with gradient or solid-color background and text overlay."""
     if Image is None:
         print("ERROR: Pillow is required for title card generation. Install with: pip install Pillow", file=sys.stderr)
         raise SystemExit(1)
 
-    color = extract_hex_color(background)
-    img = Image.new("RGB", (width, height), color)
+    # Try gradient first, fall back to solid color
+    gradient_stops = _parse_linear_gradient(background)
+    if gradient_stops:
+        img = _render_gradient_image(gradient_stops, width, height)
+    else:
+        color = extract_hex_color(background)
+        img = Image.new("RGB", (width, height), color)
+
     draw = ImageDraw.Draw(img)
+    title_font = _load_font(56, bold=True)
+    subtitle_font = _load_font(32, bold=False)
 
     cx, cy = width // 2, height // 2
-    draw.text((cx, cy), text, fill="white", anchor="mm")
+    draw.text((cx, cy), text, fill="white", anchor="mm", font=title_font)
     if subtitle:
-        draw.text((cx, cy + 50), subtitle, fill="#cccccc", anchor="mm")
+        draw.text((cx, cy + 60), subtitle, fill="#cccccc", anchor="mm", font=subtitle_font)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(str(output_path))
@@ -456,8 +584,16 @@ def export_capcut(args: argparse.Namespace) -> Path:
     drafts_dir: Path = args.drafts_dir
     drafts_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create draft
     df = DraftFolder(str(drafts_dir))
+
+    # ── Template mode ─────────────────────────────────────────────────────
+    capcut_template: str | None = getattr(args, "capcut_template", None)
+    if capcut_template:
+        return _export_template_mode(
+            df, capcut_template, draft_name, edit_data, resolved_sources, timeline, args,
+        )
+
+    # ── Normal mode ───────────────────────────────────────────────────────
     script = df.create_draft(draft_name, width, height, fps=fps, allow_replace=True)
 
     # Add a video track to the script
@@ -557,6 +693,20 @@ def export_capcut(args: argparse.Namespace) -> Path:
             _apply_transition(seg, entry, i, timeline)
 
             segments.append(seg)
+
+            # Editable text overlays for title and subtitle
+            title_style = TextStyle(size=14.0, bold=True, color=(1.0, 1.0, 1.0))
+            title_clip = ClipSettings(transform_y=-0.05)
+            text_segments.append(
+                TextSegment(text, Timerange(timeline_cursor, card_duration_us), style=title_style, clip_settings=title_clip)
+            )
+            if subtitle:
+                sub_style = TextStyle(size=8.0, bold=False, color=(0.8, 0.8, 0.8))
+                sub_clip = ClipSettings(transform_y=0.15)
+                text_segments.append(
+                    TextSegment(subtitle, Timerange(timeline_cursor, card_duration_us), style=sub_style, clip_settings=sub_clip)
+                )
+
             timeline_cursor += card_duration_us
 
     # Add all video segments
@@ -626,6 +776,92 @@ def _add_text_segments_to_tracks(script: Any, text_segments: list[TextSegment]) 
             script.add_track(TrackType.text, track_name)
             script.add_segment(tseg, track_name)
             tracks.append((track_name, seg_end))
+
+
+# ── Template mode ─────────────────────────────────────────────────────────────
+
+
+def _export_template_mode(
+    df: DraftFolder,
+    template_name: str,
+    draft_name: str,
+    edit_data: dict[str, Any],
+    resolved_sources: dict[str, Path],
+    timeline: list[dict[str, Any]],
+    args: argparse.Namespace,
+) -> Path:
+    """Export using an existing CapCut draft as template."""
+    drafts_dir: Path = args.drafts_dir
+
+    print(f"  Template mode: duplicating '{template_name}' → '{draft_name}'", file=sys.stderr)
+    script = df.duplicate_as_template(template_name, draft_name, allow_replace=True)
+
+    video_track_idx: int = getattr(args, "capcut_template_video_track", 0)
+    text_track_idx: int = getattr(args, "capcut_template_text_track", 0)
+
+    # Get imported tracks from template
+    try:
+        video_track = script.get_imported_track(TrackType.video, index=video_track_idx)
+    except Exception:
+        print(f"WARNING: template has no video track at index {video_track_idx}", file=sys.stderr)
+        video_track = None
+
+    try:
+        text_track = script.get_imported_track(TrackType.text, index=text_track_idx)
+    except Exception:
+        text_track = None
+
+    # Collect video clips and title texts from timeline
+    video_entries: list[dict[str, Any]] = []
+    text_entries: list[str] = []
+    for entry in timeline:
+        entry_type = entry.get("type", "")
+        if entry_type == "clip":
+            video_entries.append(entry)
+        elif entry_type == "title-card":
+            text_entries.append(entry.get("text", ""))
+
+    # Replace video segments
+    if video_track is not None:
+        template_video_count = len(video_track)
+        for seg_idx, entry in enumerate(video_entries):
+            if seg_idx >= template_video_count:
+                print(
+                    f"  Template has {template_video_count} video segment(s), "
+                    f"timeline has {len(video_entries)} — extra clips ignored in template mode",
+                    file=sys.stderr,
+                )
+                break
+            source_key: str = entry.get("source", "")
+            if source_key not in resolved_sources:
+                print(f"WARNING: clip references unknown source '{source_key}' — skipping", file=sys.stderr)
+                continue
+            mat = VideoMaterial(str(resolved_sources[source_key]))
+            script.add_material(mat)
+            start_us = int(entry["startSec"] * SEC)
+            end_us = int(entry["endSec"] * SEC)
+            source_tr = Timerange(start_us, end_us - start_us)
+            script.replace_material_by_seg(video_track, seg_idx, mat, source_timerange=source_tr)
+
+        if len(video_entries) < template_video_count:
+            print(
+                f"  Template has {template_video_count} video segment(s), "
+                f"timeline has {len(video_entries)} — {template_video_count - len(video_entries)} template segment(s) unchanged",
+                file=sys.stderr,
+            )
+
+    # Replace text segments
+    if text_track is not None and text_entries:
+        template_text_count = len(text_track)
+        for seg_idx, txt in enumerate(text_entries):
+            if seg_idx >= template_text_count:
+                break
+            script.replace_text(text_track, seg_idx, txt)
+
+    script.save()
+    draft_path = drafts_dir / draft_name
+    _print_instructions(draft_path)
+    return draft_path
 
 
 def _apply_transition(seg: VideoSegment, entry: dict[str, Any], index: int, timeline: list[dict[str, Any]]) -> None:
