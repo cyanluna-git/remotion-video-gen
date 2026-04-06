@@ -2,3 +2,5 @@ openai-whisper>=20231117
 anthropic>=0.40.0
 scenedetect[opencv]>=0.6.4
 openai>=1.0.0
+pycapcut>=0.0.3
+Pillow>=10.0.0
