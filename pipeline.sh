@@ -96,6 +96,8 @@ print_usage() {
   echo "  --force            Ignore cache, re-run everything"
   echo "  --clean            Delete .work/ and output/, then exit"
   echo "  --from-step=N      Start from step N (1-5), skip earlier steps"
+  echo "  --renderer NAME    Renderer backend: remotion (default) | capcut"
+  echo "  --drafts-dir PATH  CapCut drafts folder (only with --renderer capcut)"
   echo "  --output PATH      Output file (default: output/final.mp4)"
   echo "  --concurrency N    Remotion parallel frames (default: 4)"
 }
@@ -134,6 +136,8 @@ FORCE=false
 FROM_STEP=1
 OUTPUT_FILE="$OUTPUT_DIR/final.mp4"
 CONCURRENCY=4
+RENDERER="remotion"
+DRAFTS_DIR=""
 
 # Parse optional flags
 shift
@@ -166,6 +170,8 @@ while [ $# -gt 0 ]; do
     --from-step=*) FROM_STEP="${1#--from-step=}" ;;
     --output) OUTPUT_FILE="$2"; shift ;;
     --concurrency) CONCURRENCY="$2"; shift ;;
+    --renderer) RENDERER="$2"; shift ;;
+    --drafts-dir) DRAFTS_DIR="$2"; shift ;;
     --help|-h) print_usage; exit 0 ;;
     --*) echo "Unknown option: $1"; exit 1 ;;
     *)
@@ -197,6 +203,26 @@ if [ "$AUTO_SCENARIO" = false ] && [ -z "$MANUAL_INPUT" ]; then
   echo "Error: manual mode requires <edit-or-scenario.json>."
   print_usage
   exit 1
+fi
+
+# ── Validate --renderer ──
+if [[ "$RENDERER" != "remotion" && "$RENDERER" != "capcut" ]]; then
+  echo "Error: --renderer must be 'remotion' or 'capcut', got '$RENDERER'"
+  exit 1
+fi
+if [ -n "$DRAFTS_DIR" ] && [ "$RENDERER" != "capcut" ]; then
+  echo "Warning: --drafts-dir is only used with --renderer capcut, ignoring."
+fi
+if [ "$RENDERER" = "capcut" ]; then
+  if [ ! -f "$SCRIPTS_DIR/export_capcut.py" ]; then
+    echo "Error: scripts/export_capcut.py not found. Task #2260 must be completed first."
+    exit 1
+  fi
+  if ! python3 -c "import pycapcut" 2>/dev/null; then
+    echo "Error: pycapcut package not installed. Install it with:"
+    echo "  pip install pycapcut"
+    exit 1
+  fi
 fi
 
 if [ -z "$EDIT_OUTPUT" ]; then
@@ -700,52 +726,81 @@ else
 fi
 
 # ═══════════════════════════════════════════
-# Step 4: Remotion Render
+# Step 4: Render (remotion | capcut)
 # ═══════════════════════════════════════════
 if [ "$FROM_STEP" -le 4 ]; then
-  echo ""
-  echo "==========================================="
-  echo " Step 4: Remotion Render"
-  echo "==========================================="
-  STEP_START=$(date +%s)
-
-  # Copy normalized video to Remotion public directory
-  mkdir -p "$REMOTION_DIR/public/recordings"
-  RECORDING_NAME="${BASENAME}_normalized.mp4"
-
-  if [ -f "$NORMALIZED" ]; then
-    cp "$NORMALIZED" "$REMOTION_DIR/public/recordings/$RECORDING_NAME"
-    # Also copy as normalized.mp4 (AI-generated edit.json may reference this name)
-    cp "$NORMALIZED" "$REMOTION_DIR/public/recordings/normalized.mp4"
-    echo "  Copied recording -> remotion/public/recordings/$RECORDING_NAME"
-  fi
-
-  # Wrap edit.json in {script: ...} for Remotion component props
   EDIT_SOURCE="${PROPS_FILE:-$MANUAL_INPUT}"
-  WRAPPED_PROPS="$WORK_DIR/remotion-props.json"
-  python3 "$SCRIPTS_DIR/prepare_render_props.py" \
-    --edit-source "$EDIT_SOURCE" \
-    --output "$WRAPPED_PROPS" \
-    --public-dir "$REMOTION_DIR/public"
 
-  echo "  Props file: $EDIT_SOURCE -> wrapped"
-  echo "  Rendering with Remotion (concurrency=$CONCURRENCY)..."
-  cd "$REMOTION_DIR"
-  npx remotion render ScriptDrivenVideo \
-    "$OUTPUT_FILE" \
-    --props="$WRAPPED_PROPS" \
-    --concurrency="$CONCURRENCY" \
-    2>&1 | tail -5
+  if [ "$RENDERER" = "remotion" ]; then
+    echo ""
+    echo "==========================================="
+    echo " Step 4: Remotion Render"
+    echo "==========================================="
+    STEP_START=$(date +%s)
 
-  STEP_STATUS[3]="RAN"
-  STEP_ELAPSED[3]=$(($(date +%s) - STEP_START))
-  echo "  Elapsed: $(step_timer $STEP_START)"
+    # Copy normalized video to Remotion public directory
+    mkdir -p "$REMOTION_DIR/public/recordings"
+    RECORDING_NAME="${BASENAME}_normalized.mp4"
+
+    if [ -f "$NORMALIZED" ]; then
+      cp "$NORMALIZED" "$REMOTION_DIR/public/recordings/$RECORDING_NAME"
+      # Also copy as normalized.mp4 (AI-generated edit.json may reference this name)
+      cp "$NORMALIZED" "$REMOTION_DIR/public/recordings/normalized.mp4"
+      echo "  Copied recording -> remotion/public/recordings/$RECORDING_NAME"
+    fi
+
+    # Wrap edit.json in {script: ...} for Remotion component props
+    WRAPPED_PROPS="$WORK_DIR/remotion-props.json"
+    python3 "$SCRIPTS_DIR/prepare_render_props.py" \
+      --edit-source "$EDIT_SOURCE" \
+      --output "$WRAPPED_PROPS" \
+      --public-dir "$REMOTION_DIR/public"
+
+    echo "  Props file: $EDIT_SOURCE -> wrapped"
+    echo "  Rendering with Remotion (concurrency=$CONCURRENCY)..."
+    cd "$REMOTION_DIR"
+    npx remotion render ScriptDrivenVideo \
+      "$OUTPUT_FILE" \
+      --props="$WRAPPED_PROPS" \
+      --concurrency="$CONCURRENCY" \
+      2>&1 | tail -5
+
+    STEP_STATUS[3]="RAN"
+    STEP_ELAPSED[3]=$(($(date +%s) - STEP_START))
+    echo "  Elapsed: $(step_timer $STEP_START)"
+
+  elif [ "$RENDERER" = "capcut" ]; then
+    echo ""
+    echo "==========================================="
+    echo " Step 4: CapCut Draft Export"
+    echo "==========================================="
+    STEP_START=$(date +%s)
+
+    CAPCUT_CMD=(python3 "$SCRIPTS_DIR/export_capcut.py"
+      --input "$EDIT_SOURCE"
+      --video-dir "$WORK_DIR")
+    if [ -n "$DRAFTS_DIR" ]; then
+      CAPCUT_CMD+=(--drafts-dir "$DRAFTS_DIR")
+    fi
+
+    echo "  Exporting CapCut draft from: $EDIT_SOURCE"
+    "${CAPCUT_CMD[@]}"
+
+    CAPCUT_DRAFT_PATH="${DRAFTS_DIR:-$HOME/Movies/CapCut/Drafts}"
+    echo ""
+    echo "  [OK] Draft created at: $CAPCUT_DRAFT_PATH"
+    echo "  Open CapCut and select the draft to render."
+
+    STEP_STATUS[3]="RAN"
+    STEP_ELAPSED[3]=$(($(date +%s) - STEP_START))
+    echo "  Elapsed: $(step_timer $STEP_START)"
+  fi
 fi
 
 # ═══════════════════════════════════════════
 # Step 5: Audio Post-Processing (loudnorm)
 # ═══════════════════════════════════════════
-if [ "$FROM_STEP" -le 5 ]; then
+if [ "$FROM_STEP" -le 5 ] && [ "$RENDERER" != "capcut" ]; then
   echo ""
   echo "==========================================="
   echo " Step 5: Audio Post-Processing"
@@ -821,5 +876,11 @@ echo "  ---"
 printf "  %-27s          %s\n" "Total:" "${TOTAL_MINS}m ${TOTAL_SECS}s"
 
 echo ""
-echo "  Output: $OUTPUT_FILE"
-echo "  Size: $(du -h "$OUTPUT_FILE" 2>/dev/null | cut -f1 || echo 'N/A')"
+if [ "$RENDERER" = "capcut" ]; then
+  echo "  Renderer: capcut"
+  echo "  Draft: ${DRAFTS_DIR:-$HOME/Movies/CapCut/Drafts}"
+  echo "  Open CapCut and select the draft to render."
+else
+  echo "  Output: $OUTPUT_FILE"
+  echo "  Size: $(du -h "$OUTPUT_FILE" 2>/dev/null | cut -f1 || echo 'N/A')"
+fi
