@@ -14,3 +14,15 @@ dist/
 .DS_Store
 __pycache__/
 jobs/
+
+# Python
+.venv/
+*.pyc
+.pytest_cache/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+Thumbs.db
